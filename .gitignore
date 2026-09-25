@@ -1,0 +1,14 @@
+# Blender 回滚/手动备份
+*.blend1
+*.blend2
+*.blend3
+*.bak
+*.bak_*
+*.bak_before_*
+
+# Godot 缓存
+.godot/
+
+# 系统
+Thumbs.db
+desktop.ini
