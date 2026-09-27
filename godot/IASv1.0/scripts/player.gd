@@ -218,8 +218,10 @@ func _input(event: InputEvent):
 		cam_pitch = clamp(cam_pitch, CAM_PITCH_MIN, CAM_PITCH_MAX)
 		camera_pivot.rotation = Vector3(cam_pitch, cam_yaw, 0.0)
 
-		mouse_move_delta = mouse_move_delta.lerp(event.relative, 0.4)
-		last_mouse_relative = event.relative
+		# 攻击方向判定用的位移记录：对每帧鼠标位移做指数平滑（0.8 = 跟手程度，越大越跟手、越小越"重"）
+		# 注意这是持续累积的平滑值（不限定时间窗），按下左键时读它来定方向
+		mouse_move_delta = mouse_move_delta.lerp(event.relative, 0.8)
+		last_mouse_relative = event.relative   # 原始单帧值：格挡方向用它，避免用到攻击方向的残留
 
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
@@ -449,7 +451,7 @@ func _begin_charge():
 	is_charging = true
 	can_attack = true                   # 举剑了就能挥：清掉上一次的冷却/锁定（否则松手会卡在举剑）
 	attack_started_moving = is_moving   # 记下起手时是否在移动（决定下半身是否用攻击动画）
-	# 鼠标动过才更新方向；没动就保持上一次（初始默认「下」/前刺）
+	# 攻击方向：鼠标动过（平滑位移长度 > 2px）才更新方向；没动就保持上一次（初始默认「下」/前刺）
 	if mouse_move_delta.length() > 2.0:
 		attack_dir = _judge_mouse_dir(mouse_move_delta)
 	current_attack = ATTACK_DIR_NAMES[attack_dir]
@@ -470,6 +472,9 @@ func _release_attack():
 	is_charging = false
 	_do_attack_by_name(current_attack)
 
+# 把鼠标位移判成 4 个攻击方向（以对角线 45° 为分界）：
+#	|x| > |y| → 右 / 左（按 x 正负）
+#	否则       → 下刺(motion.y > 0) / 上劈(motion.y < 0)
 func _judge_mouse_dir(motion: Vector2) -> AttackDir:
 	var ax: float = abs(motion.x)
 	var ay: float = abs(motion.y)
