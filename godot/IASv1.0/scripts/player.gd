@@ -30,6 +30,7 @@ var is_moving: bool = false
 @export var camera_3d: Camera3D
 @export var cam_default_marker: Marker3D
 @export var cam_hold_marker: Marker3D
+@export var cam_ride_marker: Marker3D   # 骑乘时的机位（在 3D 视图里拖它即可调整）
 @onready var weapon_area: Area3D = $CharacterRig/character/Armature/Skeleton3D/WeaponSocket/Weapon/WeaponArea
 @onready var weapon_hitbox: CollisionShape3D = $CharacterRig/character/Armature/Skeleton3D/WeaponSocket/Weapon/WeaponArea/WeaponHitbox
 @onready var skeleton: Skeleton3D = $CharacterRig/character/Armature/Skeleton3D
@@ -116,6 +117,24 @@ var last_anim_state: String = ""
 var initialized: bool = false
 var has_weapon: bool = true
 
+# ---------- 骑乘 ----------
+var riding: bool = false            # 是否正在骑乘
+var mount_horse: Node3D = null      # 当前骑的马（group "horse"）
+var is_mounting: bool = false       # 正播上马动画（全身）
+var is_dismounting: bool = false    # 正播下马动画（倒放，此期间人物不受控）
+var _saved_layer: int = 1           # 骑乘时保存玩家的碰撞层/掩码，下马还原
+var _saved_mask: int = 1
+@export var ride_offset: Vector3 = Vector3.ZERO   # 骑乘落点相对鞍座的偏移（X左右 / Y高低 / Z前后，随马朝向旋转）
+@export var ride_follow_min: float = 0.1          # 末端跟随权重（离 Hips 最远骨骼只跟这么多）
+@export var ride_falloff_dist: float = 1.5        # 从 Hips 到"只剩 ride_follow_min"的距离（线性）
+@export var ride_hips_bone: String = "Hips"       # 跟随最快的根骨骼
+@export var ride_damp_speed: float = 12.0         # 阻尼速度（越大跟得越紧）
+var _ride_anchor: Transform3D = Transform3D()     # 当前鞍座（骨骼锚点）世界变换
+var _ride_base: Transform3D = Transform3D()       # 上马瞬间人物根变换（骑乘时根保持不动）
+var _ride_base_set: bool = false
+var _ride_state: Array = []                       # 每根骨骼阻尼后的全局变换
+var _ride_dbg: float = 0.0
+
 # ============================================================
 func _ready():
 	health = max_health
@@ -128,6 +147,8 @@ func _ready():
 		var tree = animation_tree.tree_root
 		if tree is AnimationNodeBlendTree:
 			blend_node = tree.get_node("body_blend")
+			# 运行时给 move 状态机加上马/下马状态，并生成倒放的 mount_rev（不改 .tscn）
+			_ensure_mount_states(tree.get_node("move_state"))
 		print("[player] body_blend 节点 = ", blend_node)
 
 	cam_target = cam_default_marker.position
@@ -150,6 +171,14 @@ func _process(delta: float):
 			last_anim_state = "idle_weapon"
 		if attack_sm:
 			attack_sm.start(&"idle_weapon")
+	# 上马/下马动画：全身交给 move 层（关遮罩、上身混合归零），播完自动恢复
+	if is_mounting or is_dismounting:
+		combat_upper_blend = 0.0
+		animation_tree.set("parameters/body_blend/blend_amount", 0.0)
+		if blend_node is AnimationNodeBlend2:
+			blend_node.filter_enabled = false
+		skeleton.clear_bones_global_pose_override()   # 上马/下马期间不写上半身覆盖，避免和上马动画抢姿势
+		return
 	# 平滑切换上半身加权：战斗中（蓄力/攻击/格挡）上半身切到攻击动作，否则回走路（腾空不算战斗 → 上身继续用跳跃动画）
 	var combat_active: bool = is_charging or is_attacking or is_blocking or is_recovering or health <= 0
 	combat_upper_blend = move_toward(combat_upper_blend, 1.0 if combat_active else 0.0, 8.0 * delta)
@@ -181,11 +210,23 @@ func _process(delta: float):
 # 上下半身分层的骨骼遮罩已配在 player.tscn 的 body_blend(Blend2) 节点上（见编辑筛选轨道）
 # ============================================================
 func _input(event: InputEvent):
+	# 下马动画期间人物不受控
+	if is_dismounting:
+		return
 	if event is InputEventKey and event.keycode == KEY_ESCAPE and event.pressed:
 		if Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
 			Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 		else:
 			Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+
+	# 上/下马：按交互键(F)
+	if event.is_action_pressed("interact") and not event.echo:
+		if is_mounting or is_dismounting:
+			pass                       # 动画播放中不响应
+		elif riding:
+			_dismount()
+		else:
+			_try_mount()
 
 	if event is InputEventKey and event.keycode == KEY_CAPSLOCK and event.pressed:
 		is_walking = not is_walking
@@ -223,6 +264,10 @@ func _input(event: InputEvent):
 		mouse_move_delta = mouse_move_delta.lerp(event.relative, 0.8)
 		last_mouse_relative = event.relative   # 原始单帧值：格挡方向用它，避免用到攻击方向的残留
 
+	# 骑乘时鼠标只用来转镜头，不触发攻击/格挡
+	if riding:
+		return
+
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			lmb_held = true
@@ -251,7 +296,147 @@ func _input(event: InputEvent):
 		_set_blocking(event.pressed)
 
 # ============================================================
+# 骑乘
+# ============================================================
+func _try_mount():
+	var best: Node3D = null
+	var best_d: float = 3.5
+	for h in get_tree().get_nodes_in_group("horse"):
+		var d: float = global_position.distance_to((h as Node3D).global_position)
+		if d < best_d:
+			best_d = d
+			best = h as Node3D
+	if best:
+		_mount(best)
+
+func _mount(h: Node3D):
+	mount_horse = h
+	riding = true                       # 上马动画期间即可控制马
+	is_mounting = true
+	h.set("has_rider", true)
+	h.set("rider", self)
+	if weapon_hitbox:
+		weapon_hitbox.disabled = true
+	if weapon_area:
+		weapon_area.monitoring = false
+	# 关掉玩家碰撞：否则玩家贴在马身上会互相顶，马的 CharacterBody 每帧被弹开 → 一上马就飘走
+	_saved_layer = collision_layer
+	_saved_mask = collision_mask
+	collision_layer = 0
+	collision_mask = 0
+	_update_riding()
+	if move_sm:
+		move_sm.start(&"mount")          # 全身播放上马动画
+	await get_tree().create_timer(_get_anim_length("mount", 1.0)).timeout
+	is_mounting = false                  # 播完：下半身保持末帧，上半身恢复常规
+
+func _dismount():
+	if mount_horse == null:
+		return
+	is_dismounting = true
+	if move_sm:
+		move_sm.start(&"mount_rev")      # 倒放下马动画
+	await get_tree().create_timer(_get_anim_length("mount", 1.0)).timeout
+	mount_horse.set("has_rider", false)
+	mount_horse.set("rider", null)
+	# 下到马的左侧
+	global_position = mount_horse.global_position + mount_horse.global_transform.basis.x * -1.4
+	velocity = Vector3.ZERO
+	mount_horse = null
+	riding = false
+	collision_layer = _saved_layer
+	collision_mask = _saved_mask
+	if weapon_area:
+		weapon_area.monitoring = true
+	if cam_default_marker:
+		cam_target = cam_default_marker.position   # 下马回到默认机位
+	_ride_base_set = false
+	_ride_state.clear()
+	if skeleton:
+		skeleton.clear_bones_global_pose_override()
+	is_dismounting = false
+
+func _update_riding():
+	if mount_horse == null:
+		riding = false
+		return
+	var anchor: Transform3D = mount_horse.global_transform
+	if mount_horse.has_method("rider_anchor"):
+		anchor = mount_horse.rider_anchor()
+	_ride_anchor = anchor * Transform3D(Basis(), ride_offset)
+	if not _ride_base_set:
+		_ride_base = global_transform       # 记住上马瞬间的人物根变换（供衰减混合用）
+		_ride_base_set = true
+	global_transform = _ride_anchor          # 刚性贴合骨骼（位置+朝向，含起伏/倾斜）
+	if cam_ride_marker:
+		cam_target = cam_ride_marker.position
+	velocity = Vector3.ZERO
+
+func _apply_ride_follow(delta: float) -> void:
+	# 只阻尼旋转：每根骨骼的旋转朝「动画旋转 × 马的旋转增量」收敛；近 Hips 快、末端慢。
+	# 位置不动（根节点已把马位移 100% 带上），所以不会分离。
+	if skeleton == null:
+		return
+	skeleton.clear_bones_global_pose_override()   # 先清掉上一帧的覆盖，读到的才是干净动画姿态（否则旋转会累加自转）
+	var n: int = skeleton.get_bone_count()
+	if _ride_state.size() != n:
+		_ride_state.resize(n)
+		for i in n:
+			_ride_state[i] = skeleton.get_bone_global_pose(i).basis.get_rotation_quaternion()
+	var hips: int = skeleton.find_bone(ride_hips_bone)
+	if hips < 0:
+		hips = 0
+	var hips_rest: Vector3 = skeleton.get_bone_global_rest(hips).origin
+	var delta_q: Quaternion = _ride_anchor.basis.get_rotation_quaternion() * _ride_base.basis.get_rotation_quaternion().inverse()
+	for i in n:
+		var rest: Transform3D = skeleton.get_bone_global_rest(i)
+		var d: float = rest.origin.distance_to(hips_rest)
+		var rate: float = lerpf(1.0, ride_follow_min, clampf(d / maxf(ride_falloff_dist, 0.001), 0.0, 1.0))
+		var cur: Transform3D = skeleton.get_bone_global_pose(i)
+		var target_q: Quaternion = (delta_q * cur.basis.get_rotation_quaternion()).normalized()
+		_ride_state[i] = (_ride_state[i] as Quaternion).slerp(target_q, clampf(rate * ride_damp_speed * delta, 0.0, 1.0))
+		skeleton.set_bone_global_pose_override(i, Transform3D(Basis(_ride_state[i]), cur.origin), 1.0, true)
+
+func _ensure_mount_states(machine) -> void:
+	# 运行时给 move 状态机加上马/下马状态；并生成倒放的 mount_rev（不改 .tscn）
+	var ap: AnimationPlayer = null
+	if animation_tree.anim_player != NodePath(""):
+		ap = animation_tree.get_node_or_null(animation_tree.anim_player) as AnimationPlayer
+	if ap and ap.has_animation("mount"):
+		ap.get_animation("mount").loop_mode = Animation.LOOP_NONE
+		if not ap.has_animation("mount_rev"):
+			var libs := ap.get_animation_library_list()
+			if libs.size() > 0:
+				ap.get_animation_library(libs[0]).add_animation("mount_rev", _make_reversed(ap.get_animation("mount")))
+	if machine == null:
+		return
+	for s in [["mount", "mount"], ["mount_rev", "mount_rev"]]:
+		if not machine.has_node(s[0]):
+			var n := AnimationNodeAnimation.new()
+			n.animation = StringName(s[1])
+			machine.add_node(s[0], n)
+
+func _make_reversed(src: Animation) -> Animation:
+	var rev := Animation.new()
+	rev.length = src.length
+	rev.loop_mode = Animation.LOOP_NONE
+	for t in src.get_track_count():
+		var idx: int = rev.add_track(src.track_get_type(t))
+		rev.track_set_path(idx, src.track_get_path(t))
+		var kc: int = src.track_get_key_count(t)
+		for k in kc:
+			var sk: int = kc - 1 - k                      # 倒序取源键 → 插入时间递增，避免乱序
+			var nt: float = src.length - src.track_get_key_time(t, sk)
+			rev.track_insert_key(idx, nt, src.track_get_key_value(t, sk))
+	return rev
+
+# ============================================================
 func _physics_process(delta: float):
+	if riding:
+		_update_riding()
+		_update_camera_follow()
+		_update_camera(delta)
+		return
 	_update_movement(delta)
 	_update_body_facing(delta)
 	move_and_slide()
@@ -371,7 +556,8 @@ func _update_camera(delta: float):
 	camera_3d.fov = lerpf(camera_3d.fov, target_fov, 10.0 * delta)
 
 func _update_camera_follow():
-	camera_pivot.global_position = global_position + Vector3(0, 1.6, 0)
+	var base: Vector3 = _ride_anchor.origin if riding else global_position
+	camera_pivot.global_position = base + Vector3(0, 1.6, 0)
 
 func _update_body_facing(delta: float):
 	var angle_diff: float = abs(wrapf(cam_yaw - rotation.y, -PI, PI))
@@ -386,14 +572,15 @@ func _update_head_rotation(delta: float):
 
 	# 死亡：上半身完全交给动画（优先于瞄准，避免俯仰残留盖住死亡姿势）
 	if health <= 0:
-		skeleton.clear_bones_global_pose_override()
+		if not riding:
+			skeleton.clear_bones_global_pose_override()
 		return
 
 	var aiming: bool = is_charging or is_attacking or is_blocking or is_recovering
 	# 瞄准 yaw 每帧都更新（战斗时也跟镜头），否则攻击结束瞬间 aim_yaw 还是旧值会把上身拽回去
-	var aim_target: float = frozen_move_yaw if cam_lock else (cam_yaw if (is_moving or aiming) else idle_face_yaw)
-	if is_moving or aiming or cam_lock:
-		aim_yaw = aim_target   # 移动/战斗：无延迟跟随镜头（或冻结方向）
+	var aim_target: float = rotation.y if riding else (frozen_move_yaw if cam_lock else (cam_yaw if (is_moving or aiming) else idle_face_yaw))
+	if is_moving or aiming or cam_lock or riding:
+		aim_yaw = aim_target   # 骑乘：只跟马身朝向（镜头不影响人物转向）；其余同原
 	else:
 		aim_yaw = lerp_angle(aim_yaw, aim_target, 10.0 * delta)   # 停下回正：平滑
 
@@ -403,7 +590,8 @@ func _update_head_rotation(delta: float):
 		return
 
 	# 非战斗：上身朝瞄准方向（移动时=镜头；停止后=停止瞬间的朝向）
-	skeleton.clear_bones_global_pose_override()
+	if not riding:
+		skeleton.clear_bones_global_pose_override()   # 骑乘时保留骑乘覆盖，瞄准叠加在其上
 	var upper_yaw: float = aim_yaw
 	# 归一化到最短角，避免 cam_yaw 无界累加导致差值绕多圈、腰部扭成麻花
 	var delta_yaw: float = wrapf(upper_yaw - rotation.y, -PI, PI)
@@ -426,7 +614,8 @@ func _update_head_rotation(delta: float):
 # 用镜头俯仰弯曲上身实现攻击俯仰（下半身不动），头/颈反向抵消保持平视
 # ============================================================
 func _apply_aim_bend(aim: float):
-	skeleton.clear_bones_global_pose_override()
+	if not riding:
+		skeleton.clear_bones_global_pose_override()
 	# 上身朝向瞄准方向：yaw 用「世界空间左乘」（不依赖骨骼局部轴），避免按 A/D 时上身左右晃动
 	var upper_yaw: float = frozen_move_yaw if cam_lock else cam_yaw
 	# 同样归一化到最短角，避免腰部扭成麻花
