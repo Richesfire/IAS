@@ -2,7 +2,7 @@
 
 [ext_resource type="PackedScene" uid="uid://c8a6l7k3415d3" path="res://scenes/player.tscn" id="1"]
 [ext_resource type="PackedScene" uid="uid://enemy001" path="res://scenes/enemy.tscn" id="2"]
-[ext_resource type="PackedScene" path="res://scenes/horse.tscn" id="3_horse"]
+[ext_resource type="PackedScene" uid="uid://drmw7v8bcyqa5" path="res://scenes/horse.tscn" id="3_horse"]
 
 [sub_resource type="Environment" id="6"]
 background_mode = 1
@@ -40,8 +40,8 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.35405624, 1.7939901)
 [node name="CamHold" type="Marker3D" parent="CameraPivot" unique_id=1842420820]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.51061106, 1.5176685)
 
-[node name="RideCam" type="Marker3D" parent="CameraPivot"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.0, 3.6)
+[node name="RideCam" type="Marker3D" parent="CameraPivot" unique_id=967909044]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 3.6)
 
 [node name="Floor" type="StaticBody3D" parent="." unique_id=680019731]
 
@@ -59,6 +59,9 @@ camera_3d = NodePath("../CameraPivot/Camera3D")
 cam_default_marker = NodePath("../CameraPivot/CamDefault")
 cam_hold_marker = NodePath("../CameraPivot/CamHold")
 cam_ride_marker = NodePath("../CameraPivot/RideCam")
+spring_stiffness = 200.0
+spring_drag = 2.0
+spring_gravity = 0.0
 
 [node name="Enemy" parent="." unique_id=135916710 instance=ExtResource("2")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5, 0, 5)
@@ -72,5 +75,5 @@ move_speed = 0.0
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3, 0, -5)
 move_speed = 0.0
 
-[node name="Horse" parent="." instance=ExtResource("3_horse")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2, 0, 2)
+[node name="Horse" parent="." unique_id=1732788455 instance=ExtResource("3_horse")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2, 0, -2.4957275)

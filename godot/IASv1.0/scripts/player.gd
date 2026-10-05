@@ -31,9 +31,9 @@ var is_moving: bool = false
 @export var cam_default_marker: Marker3D
 @export var cam_hold_marker: Marker3D
 @export var cam_ride_marker: Marker3D   # 骑乘时的机位（在 3D 视图里拖它即可调整）
-@onready var weapon_area: Area3D = $CharacterRig/character/Armature/Skeleton3D/WeaponSocket/Weapon/WeaponArea
-@onready var weapon_hitbox: CollisionShape3D = $CharacterRig/character/Armature/Skeleton3D/WeaponSocket/Weapon/WeaponArea/WeaponHitbox
-@onready var skeleton: Skeleton3D = $CharacterRig/character/Armature/Skeleton3D
+@onready var weapon_area: Area3D = $CharacterRig/character/ren/Skeleton3D/WeaponSocket/Weapon/WeaponArea
+@onready var weapon_hitbox: CollisionShape3D = $CharacterRig/character/ren/Skeleton3D/WeaponSocket/Weapon/WeaponArea/WeaponHitbox
+@onready var skeleton: Skeleton3D = $CharacterRig/character/ren/Skeleton3D
 
 # ---------- 移动参数 ----------
 @export var walk_speed: float = 3.0
@@ -125,15 +125,14 @@ var is_dismounting: bool = false    # 正播下马动画（倒放，此期间人
 var _saved_layer: int = 1           # 骑乘时保存玩家的碰撞层/掩码，下马还原
 var _saved_mask: int = 1
 @export var ride_offset: Vector3 = Vector3.ZERO   # 骑乘落点相对鞍座的偏移（X左右 / Y高低 / Z前后，随马朝向旋转）
-@export var ride_follow_min: float = 0.1          # 末端跟随权重（离 Hips 最远骨骼只跟这么多）
-@export var ride_falloff_dist: float = 1.5        # 从 Hips 到"只剩 ride_follow_min"的距离（线性）
-@export var ride_hips_bone: String = "Hips"       # 跟随最快的根骨骼
-@export var ride_damp_speed: float = 12.0         # 阻尼速度（越大跟得越紧）
+@export var ride_twist_speed: float = 6.0         # 扭转过渡/回正速度
 var _ride_anchor: Transform3D = Transform3D()     # 当前鞍座（骨骼锚点）世界变换
-var _ride_base: Transform3D = Transform3D()       # 上马瞬间人物根变换（骑乘时根保持不动）
-var _ride_base_set: bool = false
-var _ride_state: Array = []                       # 每根骨骼阻尼后的全局变换
-var _ride_dbg: float = 0.0
+var _ride_twist: float = 0.0                      # 平滑后的扭转量(-1..1)
+# 弹簧骨骼（布娃娃式次级运动）参数
+@export var spring_stiffness: float = 0.1   # 先调低看弹簧是否生效
+@export var spring_drag: float = 0.3
+@export var spring_gravity: float = 1.0
+var spring_bones: SpringBoneSimulator3D = null
 
 # ============================================================
 func _ready():
@@ -150,6 +149,7 @@ func _ready():
 			# 运行时给 move 状态机加上马/下马状态，并生成倒放的 mount_rev（不改 .tscn）
 			_ensure_mount_states(tree.get_node("move_state"))
 		print("[player] body_blend 节点 = ", blend_node)
+	_setup_spring_bones()
 
 	cam_target = cam_default_marker.position
 	camera_3d.position = cam_target
@@ -179,6 +179,8 @@ func _process(delta: float):
 			blend_node.filter_enabled = false
 		skeleton.clear_bones_global_pose_override()   # 上马/下马期间不写上半身覆盖，避免和上马动画抢姿势
 		return
+	if riding:
+		_apply_ride_twist(delta)
 	# 平滑切换上半身加权：战斗中（蓄力/攻击/格挡）上半身切到攻击动作，否则回走路（腾空不算战斗 → 上身继续用跳跃动画）
 	var combat_active: bool = is_charging or is_attacking or is_blocking or is_recovering or health <= 0
 	combat_upper_blend = move_toward(combat_upper_blend, 1.0 if combat_active else 0.0, 8.0 * delta)
@@ -204,7 +206,8 @@ func _process(delta: float):
 	# 按住 ~ 时锁定身体俯仰（镜头俯仰不受影响，仍可上下看）
 	if is_holding_cam:
 		aim_pitch = saved_body_pitch
-	_update_head_rotation(delta)
+	if not riding:
+		_update_head_rotation(delta)   # 骑乘时交给弹簧骨骼，别用瞄准覆盖去抢 spine/chest
 
 # ============================================================
 # 上下半身分层的骨骼遮罩已配在 player.tscn 的 body_blend(Blend2) 节点上（见编辑筛选轨道）
@@ -350,13 +353,12 @@ func _dismount():
 		weapon_area.monitoring = true
 	if cam_default_marker:
 		cam_target = cam_default_marker.position   # 下马回到默认机位
-	_ride_base_set = false
-	_ride_state.clear()
+	_ride_twist = 0.0
 	if skeleton:
 		skeleton.clear_bones_global_pose_override()
 	is_dismounting = false
 
-func _update_riding():
+func _update_riding(delta: float = 0.0):
 	if mount_horse == null:
 		riding = false
 		return
@@ -364,38 +366,65 @@ func _update_riding():
 	if mount_horse.has_method("rider_anchor"):
 		anchor = mount_horse.rider_anchor()
 	_ride_anchor = anchor * Transform3D(Basis(), ride_offset)
-	if not _ride_base_set:
-		_ride_base = global_transform       # 记住上马瞬间的人物根变换（供衰减混合用）
-		_ride_base_set = true
-	global_transform = _ride_anchor          # 刚性贴合骨骼（位置+朝向，含起伏/倾斜）
+	global_transform = _ride_anchor            # 刚性贴锚点；拖尾交给弹簧骨骼，前倾交给骑乘动画
+	# 按马的速度选骑乘前倾动作（走/快步/跑步/飞奔）
+	if riding and not is_mounting and not is_dismounting and move_sm:
+		var spd: float = absf(float(mount_horse.get("speed")))
+		var gait: String = "walk"
+		if spd >= float(mount_horse.get("canter_speed")):
+			gait = "gallop"
+		elif spd >= float(mount_horse.get("trot_speed")):
+			gait = "canter"
+		elif spd >= float(mount_horse.get("walk_speed")):
+			gait = "trot"
+		move_sm.travel(StringName("ride_" + gait))   # 步态前倾（按速度）
 	if cam_ride_marker:
 		cam_target = cam_ride_marker.position
+	if spring_bones:
+		spring_bones.set_active(not is_mounting and not is_dismounting)   # 骑乘态才开弹簧骨骼
 	velocity = Vector3.ZERO
 
-func _apply_ride_follow(delta: float) -> void:
-	# 只阻尼旋转：每根骨骼的旋转朝「动画旋转 × 马的旋转增量」收敛；近 Hips 快、末端慢。
-	# 位置不动（根节点已把马位移 100% 带上），所以不会分离。
+func _setup_spring_bones() -> void:
+	# 在玩家骨架下建弹簧骨骼：左右腿 + 脊椎链（骑乘时开启 → 布娃娃式次级滞后）
 	if skeleton == null:
 		return
-	skeleton.clear_bones_global_pose_override()   # 先清掉上一帧的覆盖，读到的才是干净动画姿态（否则旋转会累加自转）
-	var n: int = skeleton.get_bone_count()
-	if _ride_state.size() != n:
-		_ride_state.resize(n)
-		for i in n:
-			_ride_state[i] = skeleton.get_bone_global_pose(i).basis.get_rotation_quaternion()
-	var hips: int = skeleton.find_bone(ride_hips_bone)
-	if hips < 0:
-		hips = 0
-	var hips_rest: Vector3 = skeleton.get_bone_global_rest(hips).origin
-	var delta_q: Quaternion = _ride_anchor.basis.get_rotation_quaternion() * _ride_base.basis.get_rotation_quaternion().inverse()
-	for i in n:
-		var rest: Transform3D = skeleton.get_bone_global_rest(i)
-		var d: float = rest.origin.distance_to(hips_rest)
-		var rate: float = lerpf(1.0, ride_follow_min, clampf(d / maxf(ride_falloff_dist, 0.001), 0.0, 1.0))
-		var cur: Transform3D = skeleton.get_bone_global_pose(i)
-		var target_q: Quaternion = (delta_q * cur.basis.get_rotation_quaternion()).normalized()
-		_ride_state[i] = (_ride_state[i] as Quaternion).slerp(target_q, clampf(rate * ride_damp_speed * delta, 0.0, 1.0))
-		skeleton.set_bone_global_pose_override(i, Transform3D(Basis(_ride_state[i]), cur.origin), 1.0, true)
+	spring_bones = SpringBoneSimulator3D.new()
+	skeleton.add_child(spring_bones)
+	var chains := [
+		["Chest", "Head"],                 # 躯干：Chest 到 Head（Spine 让给前倾控制）
+		["LeftShoulder", "LeftHand"],      # 左臂：肩到手
+		["RightShoulder", "RightHand"],    # 右臂：肩到手
+		["LeftUpperLeg", "LeftFoot"],      # 左腿：上腿到脚
+		["RightUpperLeg", "RightFoot"],    # 右腿：上腿到脚
+	]
+	spring_bones.set_setting_count(chains.size())
+	for i in chains.size():
+		spring_bones.set_root_bone_name(i, chains[i][0])
+		spring_bones.set_end_bone_name(i, chains[i][1])
+		spring_bones.set_extend_end_bone(i, true)
+		spring_bones.set_stiffness(i, spring_stiffness)
+		spring_bones.set_drag(i, spring_drag)
+		spring_bones.set_gravity(i, spring_gravity)
+		spring_bones.set_radius(i, 0.02)
+
+	spring_bones.set_active(false)   # 默认关；骑乘时开
+
+func _apply_ride_twist(delta: float) -> void:
+	# 骑乘左右转：在【当前动画姿态】基础上叠世界竖直轴(yaw)扭转；平滑过渡、松手回正
+	if skeleton == null or mount_horse == null:
+		return
+	var turn: float = Input.get_axis("move_left", "move_right")
+	_ride_twist = move_toward(_ride_twist, turn, ride_twist_speed * delta)
+	for pair in [["Spine", 0.15], ["Chest", 0.2]]:
+		var idx: int = skeleton.find_bone(pair[0])
+		if idx < 0:
+			continue
+		skeleton.set_bone_global_pose_override(idx, Transform3D(), 0.0, false)   # 每帧都先清本骨覆盖（回正不残留、也不累加自转）
+		if absf(_ride_twist) < 0.001:
+			continue
+		var cur: Transform3D = skeleton.get_bone_global_pose(idx)
+		var q: Quaternion = Quaternion(Vector3.UP, -float(pair[1]) * _ride_twist)
+		skeleton.set_bone_global_pose_override(idx, Transform3D(Basis(q) * cur.basis, cur.origin), 1.0, true)
 
 func _ensure_mount_states(machine) -> void:
 	# 运行时给 move 状态机加上马/下马状态；并生成倒放的 mount_rev（不改 .tscn）
@@ -410,11 +439,24 @@ func _ensure_mount_states(machine) -> void:
 				ap.get_animation_library(libs[0]).add_animation("mount_rev", _make_reversed(ap.get_animation("mount")))
 	if machine == null:
 		return
-	for s in [["mount", "mount"], ["mount_rev", "mount_rev"]]:
+	for s in [["mount", "mount"], ["mount_rev", "mount_rev"],
+			["ride_walk", "ride_walk"], ["ride_trot", "ride_trot"],
+			["ride_canter", "ride_canter"], ["ride_gallop", "ride_gallop"]]:
 		if not machine.has_node(s[0]):
 			var n := AnimationNodeAnimation.new()
 			n.animation = StringName(s[1])
 			machine.add_node(s[0], n)
+	# 4 个骑乘态之间加交叉淡化转场（0.3s）→ travel 切换时渐变
+	var ride_states := ["ride_walk", "ride_trot", "ride_canter", "ride_gallop"]
+	for from_name in ride_states:
+		for to_name in ride_states:
+			if from_name == to_name:
+				continue
+			if not machine.has_transition(from_name, to_name):
+				var tr := AnimationNodeStateMachineTransition.new()
+				tr.xfade_time = 0.3
+				tr.switch_mode = AnimationNodeStateMachineTransition.SWITCH_MODE_IMMEDIATE
+				machine.add_transition(from_name, to_name, tr)
 
 func _make_reversed(src: Animation) -> Animation:
 	var rev := Animation.new()
@@ -433,7 +475,7 @@ func _make_reversed(src: Animation) -> Animation:
 # ============================================================
 func _physics_process(delta: float):
 	if riding:
-		_update_riding()
+		_update_riding(delta)
 		_update_camera_follow()
 		_update_camera(delta)
 		return

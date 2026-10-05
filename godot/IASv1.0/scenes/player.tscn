@@ -158,7 +158,7 @@ transitions = ["Start", "idle_weapon", SubResource("T_atk_start"), "idle_weapon"
 
 [sub_resource type="AnimationNodeBlend2" id="AnimationNodeBlend2_body"]
 filter_enabled = true
-filters = ["Armature/Skeleton3D:Chest", "Armature/Skeleton3D:Head", "Armature/Skeleton3D:LeftHand", "Armature/Skeleton3D:LeftLowerArm", "Armature/Skeleton3D:LeftShoulder", "Armature/Skeleton3D:LeftUpperArm", "Armature/Skeleton3D:Neck", "Armature/Skeleton3D:RightHand", "Armature/Skeleton3D:RightLowerArm", "Armature/Skeleton3D:RightShoulder", "Armature/Skeleton3D:RightUpperArm", "Armature/Skeleton3D:Spine", "Armature/Skeleton3D:UpperChest"]
+filters = ["ren/Skeleton3D:Chest", "ren/Skeleton3D:Head", "ren/Skeleton3D:LeftHand", "ren/Skeleton3D:LeftLowerArm", "ren/Skeleton3D:LeftShoulder", "ren/Skeleton3D:LeftUpperArm", "ren/Skeleton3D:Neck", "ren/Skeleton3D:RightHand", "ren/Skeleton3D:RightLowerArm", "ren/Skeleton3D:RightShoulder", "ren/Skeleton3D:RightUpperArm", "ren/Skeleton3D:Spine", "ren/Skeleton3D:UpperChest"]
 
 [sub_resource type="AnimationNodeAnimation" id="Anim_jump"]
 animation = &"jump"
@@ -253,12 +253,43 @@ transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 0, 0
 
 [node name="character" parent="CharacterRig" unique_id=1351488556 instance=ExtResource("2_g2els")]
 
-[node name="WeaponSocket" type="BoneAttachment3D" parent="CharacterRig/character/Armature/Skeleton3D" parent_id_path=PackedInt32Array(1351488556, 591281826) index="1" unique_id=1965197613]
-transform = Transform3D(-0.0014128536, 0.9115005, 0.41129598, 0.99994755, -0.0028874315, 0.00983429, 0.010151528, 0.41128808, -0.91144854, -0.09898751, 1.301473, 0.18866315)
+[node name="Skeleton3D" parent="CharacterRig/character/ren" parent_id_path=PackedInt32Array(1351488556, 244451794) index="0" unique_id=301673]
+bones/0/position = Vector3(-0.00015434623, 0.90970546, -0.04585922)
+bones/0/rotation = Quaternion(0.013501823, 0.70697796, 0.013501851, 0.70697784)
+bones/1/position = Vector3(-8.8191765e-09, -8.010492e-09, 0.1034565)
+bones/1/rotation = Quaternion(0.00030724145, 0.042091798, 0.99874955, 0.026976025)
+bones/2/rotation = Quaternion(-0.03644628, 0.0005030407, 0.03495057, 0.9987241)
+bones/3/rotation = Quaternion(-0.0036496327, -0.0029152795, -0.6867803, 0.7268501)
+bones/4/position = Vector3(-5.484426e-09, 8.374433e-09, -0.1034565)
+bones/4/rotation = Quaternion(0.9987495, -0.026976679, 0.0003067641, -0.042090755)
+bones/5/rotation = Quaternion(-0.036446307, -0.0005027683, -0.03495055, 0.9987241)
+bones/6/rotation = Quaternion(-0.003643601, 0.002909326, 0.6867793, 0.7268511)
+bones/7/rotation = Quaternion(8.6154833e-10, 1.4086099e-09, -0.019094463, 0.99981767)
+bones/8/rotation = Quaternion(0, 0.075, -0.111049, 0.993815)
+bones/9/rotation = Quaternion(5.7380776e-09, 2.5393814e-07, 0.30850428, 0.95122296)
+bones/10/position = Vector3(0.028704729, 0.04764826, 0.2108723)
+bones/10/rotation = Quaternion(0.8120688, -0.38481134, 0.37421575, 0.2289696)
+bones/11/position = Vector3(-3.7567382e-08, 0.32412395, -7.547022e-09)
+bones/11/rotation = Quaternion(0.25255248, -0.030009389, 0.5762441, 0.7766977)
+bones/12/position = Vector3(-0.000436312, 0.25645307, -0.00063716294)
+bones/12/rotation = Quaternion(0.21911365, -0.052826814, 0.17215188, 0.9589381)
+bones/13/rotation = Quaternion(0.13056205, -0.095972225, -0.11811029, 0.9796902)
+bones/15/rotation = Quaternion(2.8978604e-15, -3.078581e-22, 1.1572367e-14, 1)
+bones/16/position = Vector3(0.028704775, 0.0476482, -0.21087223)
+bones/16/rotation = Quaternion(-0.038414065, -0.13504611, 0.9693383, 0.20166893)
+bones/17/position = Vector3(-5.0131675e-08, 0.3241241, -4.2118906e-08)
+bones/17/rotation = Quaternion(0.37985075, 0.011758888, -0.7575216, 0.5307881)
+bones/18/position = Vector3(-0.00033107476, 0.2556098, 0.00025417557)
+bones/18/rotation = Quaternion(0.17799482, -0.12803108, 0.040150274, 0.97484046)
+bones/19/position = Vector3(-1.0669611e-07, 0.10550078, -1.1269961e-08)
+bones/19/rotation = Quaternion(0.13056104, 0.095972024, 0.118110314, 0.9796903)
+
+[node name="WeaponSocket" type="BoneAttachment3D" parent="CharacterRig/character/ren/Skeleton3D" index="1" unique_id=1965197613]
+transform = Transform3D(0.016671032, 0.9622252, 0.27174523, 0.9998201, -0.018492911, 0.004145235, 0.009014107, 0.27162755, -0.9623607, -0.06391081, 1.3029457, 0.20079362)
 bone_name = "RightHand"
 bone_idx = 19
 
-[node name="Weapon" parent="CharacterRig/character/Armature/Skeleton3D/WeaponSocket" unique_id=881234567 instance=ExtResource("4_weaponscene")]
+[node name="Weapon" parent="CharacterRig/character/ren/Skeleton3D/WeaponSocket" unique_id=881234567 instance=ExtResource("4_weaponscene")]
 
 [node name="AnimationPlayer" type="AnimationPlayer" parent="." unique_id=2059497772]
 libraries/ = SubResource("AnimationLibrary_fjrip")

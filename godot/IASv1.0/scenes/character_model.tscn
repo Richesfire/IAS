@@ -4,7 +4,7 @@
 
 [node name="character" unique_id=1351488556 instance=ExtResource("1_8x0un")]
 
-[node name="Skeleton3D" parent="Armature" parent_id_path=PackedInt32Array(790822662) index="0" unique_id=821214269]
+[node name="Skeleton3D" parent="ren" parent_id_path=PackedInt32Array(790822662) index="0" unique_id=821214269]
 bones/0/position = Vector3(8.574192e-17, 0.9095881, -0.04585922)
 bones/0/rotation = Quaternion(0.013501829, 0.70697796, 0.013501858, 0.70697784)
 bones/1/position = Vector3(-1.9738195e-08, -1.1818751e-07, 0.103456505)
