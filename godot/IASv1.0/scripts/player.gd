@@ -126,8 +126,15 @@ var _saved_layer: int = 1           # 骑乘时保存玩家的碰撞层/掩码�
 var _saved_mask: int = 1
 @export var ride_offset: Vector3 = Vector3.ZERO   # 骑乘落点相对鞍座的偏移（X左右 / Y高低 / Z前后，随马朝向旋转）
 @export var ride_twist_speed: float = 6.0         # 扭转过渡/回正速度
+@export var ride_combat_blend: float = 3.0        # 骑乘时攻击/非攻击混合速度（越小越慢）
+@export var ride_aim_min_deg: float = 15.0        # 骑乘攻击水平角：前方最小角（正前 ±15° 禁止）
+@export var ride_aim_max_deg: float = 120.0       # 骑乘攻击水平角：最大角（正后 ±60° 禁止 → 120°）
+@export var ride_aim_turn_speed: float = 1.5      # 骑乘攻击方向换侧过渡角速度(弧度/秒)：越小越慢；时长=需转角度/此值
 var _ride_anchor: Transform3D = Transform3D()     # 当前鞍座（骨骼锚点）世界变换
 var _ride_twist: float = 0.0                      # 平滑后的扭转量(-1..1)
+var _ride_aim_yaw: float = 0.0                    # 平滑后的骑乘攻击水平角（相对马正前）
+var _ride_aim_side: int = 1                       # 当前攻击侧：+1 右 / -1 左（镜头进入另一侧有效区才切）
+var _ride_aim_switching: bool = false             # 是否正在换侧限速过渡
 # 弹簧骨骼（布娃娃式次级运动）参数
 @export var spring_stiffness: float = 0.1   # 先调低看弹簧是否生效
 @export var spring_drag: float = 0.3
@@ -183,7 +190,8 @@ func _process(delta: float):
 		_apply_ride_twist(delta)
 	# 平滑切换上半身加权：战斗中（蓄力/攻击/格挡）上半身切到攻击动作，否则回走路（腾空不算战斗 → 上身继续用跳跃动画）
 	var combat_active: bool = is_charging or is_attacking or is_blocking or is_recovering or health <= 0
-	combat_upper_blend = move_toward(combat_upper_blend, 1.0 if combat_active else 0.0, 8.0 * delta)
+	var blend_spd: float = ride_combat_blend if riding else 8.0   # 骑乘时上下身混合更慢
+	combat_upper_blend = move_toward(combat_upper_blend, 1.0 if combat_active else 0.0, blend_spd * delta)
 	animation_tree.set("parameters/body_blend/blend_amount", combat_upper_blend)
 	# 战斗中：移动时只让攻击覆盖上半身(下半身走移动动画)；站着不动时关闭遮罩，全身播攻击。
 	# 「移动中起的攻击」全程保持遮罩（下半身一直用移动动画），避免攻击结束前停下导致脚跳。
@@ -206,8 +214,9 @@ func _process(delta: float):
 	# 按住 ~ 时锁定身体俯仰（镜头俯仰不受影响，仍可上下看）
 	if is_holding_cam:
 		aim_pitch = saved_body_pitch
-	if not riding:
-		_update_head_rotation(delta)   # 骑乘时交给弹簧骨骼，别用瞄准覆盖去抢 spine/chest
+	var _combat_aim: bool = is_charging or is_attacking or is_blocking or is_recovering
+	if not riding or _combat_aim:
+		_update_head_rotation(delta)   # 骑乘时仅在攻击/格挡下用瞄准覆盖(朝镜头)；否则交给弹簧骨骼
 
 # ============================================================
 # 上下半身分层的骨骼遮罩已配在 player.tscn 的 body_blend(Blend2) 节点上（见编辑筛选轨道）
@@ -266,10 +275,6 @@ func _input(event: InputEvent):
 		# 注意这是持续累积的平滑值（不限定时间窗），按下左键时读它来定方向
 		mouse_move_delta = mouse_move_delta.lerp(event.relative, 0.8)
 		last_mouse_relative = event.relative   # 原始单帧值：格挡方向用它，避免用到攻击方向的残留
-
-	# 骑乘时鼠标只用来转镜头，不触发攻击/格挡
-	if riding:
-		return
 
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
@@ -354,11 +359,14 @@ func _dismount():
 	if cam_default_marker:
 		cam_target = cam_default_marker.position   # 下马回到默认机位
 	_ride_twist = 0.0
+	_ride_aim_yaw = 0.0
+	_ride_aim_side = 1
+	_ride_aim_switching = false
 	if skeleton:
 		skeleton.clear_bones_global_pose_override()
 	is_dismounting = false
 
-func _update_riding(delta: float = 0.0):
+func _update_riding(_delta: float = 0.0):
 	if mount_horse == null:
 		riding = false
 		return
@@ -413,7 +421,9 @@ func _apply_ride_twist(delta: float) -> void:
 	# 骑乘左右转：在【当前动画姿态】基础上叠世界竖直轴(yaw)扭转；平滑过渡、松手回正
 	if skeleton == null or mount_horse == null:
 		return
-	var turn: float = Input.get_axis("move_left", "move_right")
+	# 攻击/格挡时：不跟马转向、身体朝镜头（交给 _update_head_rotation）
+	var aiming: bool = is_charging or is_attacking or is_blocking or is_recovering
+	var turn: float = 0.0 if aiming else Input.get_axis("move_left", "move_right")
 	_ride_twist = move_toward(_ride_twist, turn, ride_twist_speed * delta)
 	for pair in [["Spine", 0.15], ["Chest", 0.2]]:
 		var idx: int = skeleton.find_bone(pair[0])
@@ -453,10 +463,10 @@ func _ensure_mount_states(machine) -> void:
 			if from_name == to_name:
 				continue
 			if not machine.has_transition(from_name, to_name):
-				var tr := AnimationNodeStateMachineTransition.new()
-				tr.xfade_time = 0.3
-				tr.switch_mode = AnimationNodeStateMachineTransition.SWITCH_MODE_IMMEDIATE
-				machine.add_transition(from_name, to_name, tr)
+				var trans := AnimationNodeStateMachineTransition.new()
+				trans.xfade_time = 0.3
+				trans.switch_mode = AnimationNodeStateMachineTransition.SWITCH_MODE_IMMEDIATE
+				machine.add_transition(from_name, to_name, trans)
 
 func _make_reversed(src: Animation) -> Animation:
 	var rev := Animation.new()
@@ -628,7 +638,7 @@ func _update_head_rotation(delta: float):
 
 	# 蓄力/攻击/格挡/收招，或俯仰还没归零：上身左右转由代码控制（朝镜头瞄准）+ 平滑俯仰弯曲
 	if aiming or absf(aim_pitch) > 0.001:
-		_apply_aim_bend(aim_pitch)
+		_apply_aim_bend(aim_pitch, delta)
 		return
 
 	# 非战斗：上身朝瞄准方向（移动时=镜头；停止后=停止瞬间的朝向）
@@ -655,13 +665,39 @@ func _update_head_rotation(delta: float):
 # ============================================================
 # 用镜头俯仰弯曲上身实现攻击俯仰（下半身不动），头/颈反向抵消保持平视
 # ============================================================
-func _apply_aim_bend(aim: float):
+func _apply_aim_bend(aim: float, delta: float):
 	if not riding:
 		skeleton.clear_bones_global_pose_override()
 	# 上身朝向瞄准方向：yaw 用「世界空间左乘」（不依赖骨骼局部轴），避免按 A/D 时上身左右晃动
 	var upper_yaw: float = frozen_move_yaw if cam_lock else cam_yaw
 	# 同样归一化到最短角，避免腰部扭成麻花
-	var yaw_q: Quaternion = Quaternion(Vector3.UP, wrapf(upper_yaw - rotation.y, -PI, PI))
+	var dy: float = wrapf(upper_yaw - rotation.y, -PI, PI)
+	if riding:
+		# 骑乘：水平攻击角限制（正前±15°、正后±60° 禁止）
+		# 换侧判定：不是中线，而是「镜头进入另一侧的有效区」（越过对侧 ±min 边界）才切
+		var lo: float = deg_to_rad(ride_aim_min_deg)
+		var switched: bool = false
+		if _ride_aim_side > 0 and dy <= -lo:
+			_ride_aim_side = -1
+			switched = true
+		elif _ride_aim_side < 0 and dy >= lo:
+			_ride_aim_side = 1
+			switched = true
+		var target: float = _clamp_ride_aim(dy, _ride_aim_side)
+		if switched:
+			_ride_aim_switching = true
+		if _ride_aim_switching:
+			# 换侧中：按固定角速度限速扫向「当前」目标（两端异号 → 必经 0°=马头正前，不会从后面绕）
+			# 时长自然 = 需转角度 / 角速度；快到目标才停，避免端点对不上造成的瞬跳
+			var step: float = maxf(ride_aim_turn_speed, 0.001) * delta
+			_ride_aim_yaw = move_toward(_ride_aim_yaw, target, step)
+			if absf(_ride_aim_yaw - target) <= step:
+				_ride_aim_yaw = target
+				_ride_aim_switching = false
+		else:
+			_ride_aim_yaw = target   # 同侧有效范围内：即时跟随，无延迟
+		dy = _ride_aim_yaw
+	var yaw_q: Quaternion = Quaternion(Vector3.UP, dy)
 	if spine_bone_idx >= 0:
 		var cur: Transform3D = skeleton.get_bone_global_pose(spine_bone_idx)
 		var rest: Transform3D = skeleton.get_bone_global_rest(spine_bone_idx)
@@ -672,6 +708,14 @@ func _apply_aim_bend(aim: float):
 		# 实际姿态仍用当前动画姿势，再叠世界空间俯仰
 		var aimed: Basis = Basis(yaw_q) * cur.basis
 		skeleton.set_bone_global_pose_override(spine_bone_idx, Transform3D(Basis(pitch_q) * aimed, cur.origin), 1.0, true)
+
+# 骑乘攻击的水平角限制（相对马正前方，正=右）；四种攻击方式判定不受影响，只夹这个角
+func _clamp_ride_aim(delta_yaw: float, side: int) -> float:
+	var lo: float = deg_to_rad(ride_aim_min_deg)
+	var hi: float = deg_to_rad(ride_aim_max_deg)
+	if side > 0:
+		return clampf(delta_yaw, lo, hi)    # 右侧有效区 [+15°,+120°]
+	return clampf(delta_yaw, -hi, -lo)      # 左侧有效区 [-120°,-15°]
 
 # ============================================================
 # 战斗逻辑
