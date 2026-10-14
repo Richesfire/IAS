@@ -127,8 +127,10 @@ var _saved_mask: int = 1
 @export var ride_offset: Vector3 = Vector3.ZERO   # 骑乘落点相对鞍座的偏移（X左右 / Y高低 / Z前后，随马朝向旋转）
 @export var ride_twist_speed: float = 6.0         # 扭转过渡/回正速度
 @export var ride_combat_blend: float = 3.0        # 骑乘时攻击/非攻击混合速度（越小越慢）
-@export var ride_aim_min_deg: float = 15.0        # 骑乘攻击水平角：前方最小角（正前 ±15° 禁止）
-@export var ride_aim_max_deg: float = 120.0       # 骑乘攻击水平角：最大角（正后 ±60° 禁止 → 120°）
+@export var ride_aim_right_min_deg: float = 15.0  # 骑乘攻击水平角·右侧：最小角（>此角进入右区）
+@export var ride_aim_right_max_deg: float = 120.0 # 骑乘攻击水平角·右侧：最大角
+@export var ride_aim_left_min_deg: float = 15.0   # 骑乘攻击水平角·左侧：最小角（<-此角进入左区）
+@export var ride_aim_left_max_deg: float = 120.0  # 骑乘攻击水平角·左侧：最大角
 @export var ride_aim_turn_speed: float = 1.5      # 骑乘攻击方向换侧过渡角速度(弧度/秒)：越小越慢；时长=需转角度/此值
 var _ride_anchor: Transform3D = Transform3D()     # 当前鞍座（骨骼锚点）世界变换
 var _ride_twist: float = 0.0                      # 平滑后的扭转量(-1..1)
@@ -197,11 +199,12 @@ func _process(delta: float):
 	# 「移动中起的攻击」全程保持遮罩（下半身一直用移动动画），避免攻击结束前停下导致脚跳。
 	if not combat_active:
 		attack_started_moving = false
-	var mask_off: bool = combat_active and not is_moving and not attack_started_moving
+	# 骑乘时永远保留上半身遮罩（下半身始终是骑马姿势，不能用地面攻击的全身动作）
+	var mask_off: bool = combat_active and not is_moving and not attack_started_moving and not riding
 	if blend_node is AnimationNodeBlend2:
 		blend_node.filter_enabled = not mask_off
-	# 俯仰过渡：收剑 = 与收剑动画同步归零；举剑 = 跟随镜头；挥砍跟随镜头；上劈(up)取消俯仰变化；其余归零
-	var cancel_pitch: bool = is_blocking or (current_attack == "up" and (is_charging or is_attacking or is_recovering))
+	# 俯仰过渡：收剑 = 与收剑动画同步归零；举剑/挥砍 = 跟随镜头；格挡取消俯仰变化
+	var cancel_pitch: bool = is_blocking
 	var pitch_target: float = 0.0 if cancel_pitch else cam_pitch
 	if is_recovering:
 		recover_pitch_t += delta
@@ -263,7 +266,7 @@ func _input(event: InputEvent):
 		if is_holding_cam:
 			cam_target = cam_hold_marker.position
 		else:
-			cam_target = cam_default_marker.position
+			cam_target = _cam_base_marker_pos()
 
 	if event is InputEventMouseMotion:
 		cam_yaw += -event.relative.x * 0.002
@@ -386,7 +389,8 @@ func _update_riding(_delta: float = 0.0):
 		elif spd >= float(mount_horse.get("walk_speed")):
 			gait = "trot"
 		move_sm.travel(StringName("ride_" + gait))   # 步态前倾（按速度）
-	if cam_ride_marker:
+	# 按住 ~ 时不要每帧覆盖机位（否则 ~ 的悬停机位会被立刻刷回骑乘机位 → 按了没反应）
+	if cam_ride_marker and not is_holding_cam:
 		cam_target = cam_ride_marker.position
 	if spring_bones:
 		spring_bones.set_active(not is_mounting and not is_dismounting)   # 骑乘态才开弹簧骨骼
@@ -593,12 +597,17 @@ func _update_movement(delta: float):
 			last_anim_state = move_state
 
 # ============================================================
+# 松开 ~ 的归位目标：骑乘回骑乘机位、否则回默认机位
+func _cam_base_marker_pos() -> Vector3:
+	return cam_ride_marker.position if riding else cam_default_marker.position
+
 func _update_camera(delta: float):
 	if cam_returning:
-		# ② 只回归机位：从悬停机位平滑回到默认机位（角度不锁，玩家全程可自由控制）
-		camera_3d.position = camera_3d.position.lerp(cam_default_marker.position, cam_transition_speed * delta)
-		if camera_3d.position.distance_to(cam_default_marker.position) < 0.005:
-			camera_3d.position = cam_default_marker.position
+		# ② 只回归机位：从悬停机位平滑回到默认/骑乘机位（角度不锁，玩家全程可自由控制）
+		var ret_pos: Vector3 = _cam_base_marker_pos()
+		camera_3d.position = camera_3d.position.lerp(ret_pos, cam_transition_speed * delta)
+		if camera_3d.position.distance_to(ret_pos) < 0.005:
+			camera_3d.position = ret_pos
 			cam_returning = false
 	else:
 		camera_3d.position = camera_3d.position.lerp(cam_target, cam_transition_speed * delta)
@@ -630,7 +639,14 @@ func _update_head_rotation(delta: float):
 
 	var aiming: bool = is_charging or is_attacking or is_blocking or is_recovering
 	# 瞄准 yaw 每帧都更新（战斗时也跟镜头），否则攻击结束瞬间 aim_yaw 还是旧值会把上身拽回去
-	var aim_target: float = rotation.y if riding else (frozen_move_yaw if cam_lock else (cam_yaw if (is_moving or aiming) else idle_face_yaw))
+	# 站定(未移动/未战斗)时上身不朝镜头——即使按住 ~ 也保持原朝向
+	var aim_target: float
+	if riding:
+		aim_target = rotation.y
+	elif is_moving or aiming:
+		aim_target = frozen_move_yaw if cam_lock else cam_yaw
+	else:
+		aim_target = idle_face_yaw
 	if is_moving or aiming or cam_lock or riding:
 		aim_yaw = aim_target   # 骑乘：只跟马身朝向（镜头不影响人物转向）；其余同原
 	else:
@@ -675,12 +691,14 @@ func _apply_aim_bend(aim: float, delta: float):
 	if riding:
 		# 骑乘：水平攻击角限制（正前±15°、正后±60° 禁止）
 		# 换侧判定：不是中线，而是「镜头进入另一侧的有效区」（越过对侧 ±min 边界）才切
-		var lo: float = deg_to_rad(ride_aim_min_deg)
+		var rlo: float = deg_to_rad(ride_aim_right_min_deg)
+		var llo: float = deg_to_rad(ride_aim_left_min_deg)
 		var switched: bool = false
-		if _ride_aim_side > 0 and dy <= -lo:
+		# Godot: +yaw = 左、-yaw = 右。side=+1 表示正角(左)侧，-1 表示负角(右)侧
+		if _ride_aim_side > 0 and dy <= -rlo:
 			_ride_aim_side = -1
 			switched = true
-		elif _ride_aim_side < 0 and dy >= lo:
+		elif _ride_aim_side < 0 and dy >= llo:
 			_ride_aim_side = 1
 			switched = true
 		var target: float = _clamp_ride_aim(dy, _ride_aim_side)
@@ -711,11 +729,11 @@ func _apply_aim_bend(aim: float, delta: float):
 
 # 骑乘攻击的水平角限制（相对马正前方，正=右）；四种攻击方式判定不受影响，只夹这个角
 func _clamp_ride_aim(delta_yaw: float, side: int) -> float:
-	var lo: float = deg_to_rad(ride_aim_min_deg)
-	var hi: float = deg_to_rad(ride_aim_max_deg)
 	if side > 0:
-		return clampf(delta_yaw, lo, hi)    # 右侧有效区 [+15°,+120°]
-	return clampf(delta_yaw, -hi, -lo)      # 左侧有效区 [-120°,-15°]
+		# 正角侧 = 左
+		return clampf(delta_yaw, deg_to_rad(ride_aim_left_min_deg), deg_to_rad(ride_aim_left_max_deg))
+	# 负角侧 = 右
+	return clampf(delta_yaw, -deg_to_rad(ride_aim_right_max_deg), -deg_to_rad(ride_aim_right_min_deg))
 
 # ============================================================
 # 战斗逻辑
