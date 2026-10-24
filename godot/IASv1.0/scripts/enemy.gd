@@ -8,6 +8,7 @@ extends CharacterBody3D
 # ---------- 节点引用 ----------
 @onready var animation_tree = $AnimationTree
 @onready var state_machine = null
+@onready var model_ap: AnimationPlayer = get_node_or_null("Model/AnimationPlayer") as AnimationPlayer
 @onready var weapon_area: Area3D = $WeaponArea
 @onready var weapon_hitbox: CollisionShape3D = $WeaponArea/WeaponHitbox
 
@@ -40,6 +41,8 @@ func _ready():
 	weapon_hitbox.disabled = true
 	if animation_tree:
 		state_machine = animation_tree.get("parameters/playback")
+	if model_ap and model_ap.has_animation("idle_empty"):
+		model_ap.play("idle_empty")
 	# 寻找玩家
 	target = get_tree().get_first_node_in_group("player")
 

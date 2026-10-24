@@ -1,14 +1,11 @@
 [gd_scene load_steps=5 format=3]
 
 [ext_resource type="Script" path="res://scripts/enemy.gd" id="1"]
+[ext_resource type="PackedScene" uid="uid://chyc1boaya6b1" path="res://scenes/character_model.tscn" id="2_model"]
 
 [sub_resource type="CapsuleShape3D" id="2"]
 radius = 0.4
 height = 1.8
-
-[sub_resource type="CapsuleMesh" id="3"]
-radius = 0.35
-height = 1.6
 
 [sub_resource type="BoxShape3D" id="4"]
 size = Vector3(0.15, 0.12, 1.6)
@@ -20,9 +17,7 @@ script = ExtResource("1")
 shape = SubResource("2")
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.0, 0)
 
-[node name="BodyMesh" type="MeshInstance3D" parent="."]
-mesh = SubResource("3")
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.0, 0)
+[node name="Model" parent="." instance=ExtResource("2_model")]
 
 [node name="WeaponArea" type="Area3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.6, 1.2, 0.6)

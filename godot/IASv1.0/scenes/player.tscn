@@ -5,8 +5,8 @@
 [ext_resource type="PackedScene" uid="uid://bq3m7x2p1xa0k" path="res://scenes/weapon.tscn" id="4_weaponscene"]
 
 [sub_resource type="CapsuleShape3D" id="2"]
-radius = 0.4
-height = 1.8829101
+radius = 0.30664063
+height = 1.9311489
 
 [sub_resource type="AnimationLibrary" id="AnimationLibrary_fjrip"]
 
@@ -245,7 +245,7 @@ node_connections = [&"output", 0, &"body_blend", &"body_blend", 0, &"move_state"
 script = ExtResource("1")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=1345717915]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9585449, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.96731126, 0)
 shape = SubResource("2")
 
 [node name="CharacterRig" type="Node3D" parent="." unique_id=1088804194]
@@ -253,7 +253,7 @@ transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 0, 0
 
 [node name="character" parent="CharacterRig" unique_id=1351488556 instance=ExtResource("2_g2els")]
 
-[node name="Skeleton3D" parent="CharacterRig/character/ren" parent_id_path=PackedInt32Array(1351488556, 244451794) index="0" unique_id=301673]
+[node name="Skeleton3D" parent="CharacterRig/character/ren" parent_id_path=PackedInt32Array(1351488556, 2132576753) index="0" unique_id=1880707932]
 bones/0/position = Vector3(-0.00015434623, 0.90970546, -0.04585922)
 bones/0/rotation = Quaternion(0.013501823, 0.70697796, 0.013501851, 0.70697784)
 bones/1/position = Vector3(-8.8191765e-09, -8.010492e-09, 0.1034565)
@@ -265,7 +265,7 @@ bones/4/rotation = Quaternion(0.9987495, -0.026976679, 0.0003067641, -0.04209075
 bones/5/rotation = Quaternion(-0.036446307, -0.0005027683, -0.03495055, 0.9987241)
 bones/6/rotation = Quaternion(-0.003643601, 0.002909326, 0.6867793, 0.7268511)
 bones/7/rotation = Quaternion(8.6154833e-10, 1.4086099e-09, -0.019094463, 0.99981767)
-bones/8/rotation = Quaternion(0, 0.075, -0.111049, 0.993815)
+bones/8/rotation = Quaternion(-1.327199e-08, -1.6501721e-07, -0.1110486, 0.993815)
 bones/9/rotation = Quaternion(5.7380776e-09, 2.5393814e-07, 0.30850428, 0.95122296)
 bones/10/position = Vector3(0.028704729, 0.04764826, 0.2108723)
 bones/10/rotation = Quaternion(0.8120688, -0.38481134, 0.37421575, 0.2289696)
@@ -285,7 +285,7 @@ bones/19/position = Vector3(-1.0669611e-07, 0.10550078, -1.1269961e-08)
 bones/19/rotation = Quaternion(0.13056104, 0.095972024, 0.118110314, 0.9796903)
 
 [node name="WeaponSocket" type="BoneAttachment3D" parent="CharacterRig/character/ren/Skeleton3D" index="1" unique_id=1965197613]
-transform = Transform3D(0.016671032, 0.9622252, 0.27174523, 0.9998201, -0.018492911, 0.004145235, 0.009014107, 0.27162755, -0.9623607, -0.06391081, 1.3029457, 0.20079362)
+transform = Transform3D(-0.0014129803, 0.9115014, 0.4112956, 0.9999472, -0.0028875656, 0.009834841, 0.010152221, 0.41128805, -0.9114493, -0.099141605, 1.3015901, 0.1886633)
 bone_name = "RightHand"
 bone_idx = 19
 

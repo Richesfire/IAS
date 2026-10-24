@@ -11,8 +11,9 @@ extends CharacterBody3D
 @export var canter_speed: float = 6.0     # 低于此值播 canter，之上播 gallop
 @export var gallop_speed: float = 9.0     # 最大前进速度
 @export var back_speed: float = 1.5       # 倒退最大速度
-@export var accel: float = 5.0            # 加速
+@export var accel: float = 5.0            # 加速（倒退用）
 @export var brake: float = 8.0            # 减速
+@export var speed_up_time: float = 3.0    # 从静止到最高速的时间（平滑）
 
 @export_group("转向")
 @export var turn_speed: float = 2.2       # 弧度/秒（低速）
@@ -29,14 +30,17 @@ extends CharacterBody3D
 @export var ride_bone_offset: Vector3 = Vector3.ZERO  # 相对该骨骼的落点偏移（X左右 / Y高低 / Z前后，随骨骼旋转）
 var _skel: Skeleton3D = null
 var _ride_bone: int = -1
+@onready var mount_area: Area3D = get_node_or_null("MountArea") as Area3D
 
 var speed: float = 0.0
+var _speed_up_t: float = 0.0
 var has_rider: bool = false
 var rider: Node3D = null
+var steer_locked: bool = false   # 下马动画期间锁定 A/D 转向
 
 var _ap: AnimationPlayer
 var _last_gait: String = ""
-var _gaits := ["idle", "walk", "trot", "canter", "gallop", "walk_back"]
+var _gaits := ["idle", "walk", "trot", "canter", "gallop", "walk_back", "turn_in_place_left", "turn_in_place_right"]
 
 # 转向：用 turn_left / turn_right 动画驱动（按住正放并停在末帧，松开反放回正）
 # 只让这两个动画控制这些骨骼，其余骨骼交给步态动画
@@ -82,9 +86,12 @@ func _ready() -> void:
 			_turn_ap.play("turn_left")
 			_turn_ap.speed_scale = 0.0
 
-func rider_anchor() -> Transform3D:
-	# 骑手附着点：取指定骨骼的全局变换（随其动画起伏/摆动，人物跟着一起动）
-	var seat := get_node_or_null("RideBone/Seat") as Node3D
+func can_mount(body: Node3D) -> bool:
+	return mount_area != null and mount_area.overlaps_body(body)
+
+func rider_anchor(side: int = 1) -> Transform3D:
+	# 左右各一个鞍座锚点：左侧 Seat / 右侧 SeatRight
+	var seat := get_node_or_null("RideBone/SeatRight" if side < 0 else "RideBone/Seat") as Node3D
 	if seat:
 		return seat.global_transform      # BoneAttachment3D 子节点：随骨骼动画一起动
 	return global_transform
@@ -94,12 +101,12 @@ func _physics_process(delta: float) -> void:
 	var turn: float = 0.0
 	if has_rider:
 		fwd = Input.get_axis("move_back", "move_forward")
-		turn = Input.get_axis("move_left", "move_right")
+		turn = 0.0 if steer_locked else Input.get_axis("move_left", "move_right")
 	_update_speed(fwd, delta)
 	_update_gravity(delta)
 	if is_on_floor():
 		_update_turn(turn, delta)
-		_update_gait()
+		_update_gait(turn)
 	else:
 		_play_jump()   # 空中：只播跳跃动画，且不能转向
 	move_and_slide()
@@ -112,7 +119,7 @@ func _update_turn_head(delta: float) -> void:
 		return
 	var turn: float = 0.0
 	if has_rider:
-		turn = Input.get_axis("move_left", "move_right")
+		turn = 0.0 if steer_locked else Input.get_axis("move_left", "move_right")
 	var want: int = 0
 	if turn > 0.1:
 		want = 1
@@ -160,11 +167,19 @@ func _strip_turn_tracks(anim: Animation) -> void:
 func _update_speed(fwd: float, delta: float) -> void:
 	var target: float = 0.0
 	if fwd > 0.01:
-		target = gallop_speed * fwd
+		# 前进：3 秒内用 smoothstep 从 0 平滑加速到最高速
+		_speed_up_t = minf(_speed_up_t + delta, maxf(speed_up_time, 0.001))
+		var p: float = clampf(_speed_up_t / maxf(speed_up_time, 0.001), 0.0, 1.0)
+		target = gallop_speed * smoothstep(0.0, 1.0, p)
+		speed = move_toward(speed, target, brake * delta)
 	elif fwd < -0.01:
+		# 倒退保持原来的线性加速
+		_speed_up_t = 0.0
 		target = back_speed * fwd
-	var rate: float = accel if absf(target) > absf(speed) else brake
-	speed = move_toward(speed, target, rate * delta)
+		speed = move_toward(speed, target, accel * delta)
+	else:
+		_speed_up_t = 0.0
+		speed = move_toward(speed, 0.0, brake * delta)
 	# 沿「马自身的前方」移动（跟随马的朝向），而不是世界 -Z
 	var forward: Vector3 = -global_transform.basis.z
 	velocity.x = forward.x * speed
@@ -182,12 +197,16 @@ func _update_turn(turn: float, delta: float) -> void:
 	var t: float = turn_speed if absf(speed) < canter_speed else turn_speed_fast
 	rotate_y(-turn * t * delta)
 
-func _update_gait() -> void:
+func _update_gait(turn: float = 0.0) -> void:
 	var gait: String
 	if speed < -0.1:
 		gait = "walk_back"
 	elif speed < 0.15:
-		gait = "idle"
+		# 原地转向：速度≈0 且按住 A/D 时播专用原地转动画（没有就回退 idle）
+		if absf(turn) > 0.1 and _ap and _ap.has_animation("turn_in_place_right" if turn > 0.0 else "turn_in_place_left"):
+			gait = "turn_in_place_right" if turn > 0.0 else "turn_in_place_left"
+		else:
+			gait = "idle"
 	elif speed < walk_speed:
 		gait = "walk"
 	elif speed < trot_speed:

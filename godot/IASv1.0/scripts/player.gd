@@ -26,11 +26,16 @@ var recover_pitch_dur: float = 0.001
 var blend_node = null
 # 当前是否有移动输入（决定下半身播移动动画还是举剑动画）
 var is_moving: bool = false
+var _moving_right: bool = false   # 当前移动方向是否偏屏幕右（用于右挥击第14帧决定是否转身）
+var _moving_left: bool = false    # 当前移动方向是否偏屏幕左（用于左挥击第14帧决定是否转身）
 @export var camera_pivot: Node3D
 @export var camera_3d: Camera3D
 @export var cam_default_marker: Marker3D
 @export var cam_hold_marker: Marker3D
-@export var cam_ride_marker: Marker3D   # 骑乘时的机位（在 3D 视图里拖它即可调整）
+@export var cam_ride_marker: Marker3D   # 左侧骑乘机位
+@export var cam_ride_hold_marker: Marker3D   # 左侧按住 ~ 的观察机位
+@export var cam_ride_marker_right: Marker3D   # 右侧骑乘机位（main 里的偏移）
+@export var cam_ride_hold_marker_right: Marker3D   # 右侧观察机位
 @onready var weapon_area: Area3D = $CharacterRig/character/ren/Skeleton3D/WeaponSocket/Weapon/WeaponArea
 @onready var weapon_hitbox: CollisionShape3D = $CharacterRig/character/ren/Skeleton3D/WeaponSocket/Weapon/WeaponArea/WeaponHitbox
 @onready var skeleton: Skeleton3D = $CharacterRig/character/ren/Skeleton3D
@@ -41,11 +46,8 @@ var is_moving: bool = false
 @export var jump_velocity: float = 4.29  # 起跳初速度（匹配 jump 动画：1帧起跳→22帧落地，滞空约0.875s）
 @export var jump_interval: float = 1.5  # 两次跳跃之间的间隔
 @export var body_rotation_speed: float = 3
-@export var head_bone_name: String = "Head"
-@export var neck_bone_name: String = "Neck"
 @export var spine_bone_name: String = "Spine"
 @export var chest_bone_name: String = "Chest"
-@export var upper_chest_bone_name: String = "UpperChest"
 
 # ---------- 摄像机 ----------
 @export var cam_transition_speed: float = 6.0
@@ -54,7 +56,6 @@ const CAM_PITCH_MAX: float = 0.8     # 镜头俯仰上限（抬头）—— 攻�
 
 # ---------- 战斗参数 ----------
 @export var max_health: float = 100.0
-@export var attack_damage: float = 25.0
 @export var attack_cooldown: float = 0.1
 
 # ---------- 运行时状态 ----------
@@ -69,6 +70,7 @@ var block_dir: String = ""
 var attack_buffered: bool = false   # 挥砍/冷却期间按左键 → 缓冲下一刀（举刀）
 var lmb_held: bool = false          # 左键是否按住（缓冲刀要先举刀，松手再挥刀）
 var is_recovering: bool = false     # 正在播放"收招"动画（保持上身权重=1，收招才显示）
+var _lateral_attack_phase: int = 0      # 右挥击下身阶段：0=正常 / 1=朝右（举刀+挥刀前段）/ 2=朝左（第14帧后）
 var recover_gen: int = 0               # 收招「代次」：打断/接管收招时 +1，旧收招协程据此提前退出（避免 bool 残留）
 var is_block_recovering: bool = false  # 正在播格挡收招（松开右键后）——此期间按左键可立刻打断接举剑
 var mouse_move_delta: Vector2 = Vector2.ZERO
@@ -92,6 +94,21 @@ const ATTACK_DIR_NAMES = {
 	AttackDir.THRUST: "thrust",
 }
 
+# 骑乘左右劈：攻击状态机里的状态名 → 骑乘专用动画名（地面动作用 "s_" + 状态名）
+const RIDE_ATTACK_SWAP := {
+	"attack_left_raise": &"s_attack_left_ride_raise",
+	"attack_left_swing": &"s_attack_left_ride_swing",
+	"attack_left_recover": &"s_attack_left_ride_recover",
+	"attack_right_raise": &"s_attack_right_ride_raise",
+	"attack_right_swing": &"s_attack_right_ride_swing",
+	"attack_right_recover": &"s_attack_right_ride_recover",
+}
+var _attack_anim_nodes: Dictionary = {}   # 状态名 → AnimationNodeAnimation（运行时切换地面/骑乘动画）
+# 右挥击的转身时机（按动画帧）：
+# 挥刀 22 帧 → 第 14 帧开始下身朝左；收刀 8 帧 → 第 5 帧恢复
+const LATERAL_SWING_TURN_T := 14.0 / 22.0
+const LATERAL_RECOVER_RESTORE_T := 5.0 / 8.0
+
 # ---------- 摄像机平滑切换 ----------
 var cam_target: Vector3 = Vector3.ZERO
 var is_holding_cam: bool = false
@@ -103,11 +120,8 @@ var saved_body_pitch: float = 0.0 # 按下 ~ 时的身体俯仰（按住期间�
 
 var cam_yaw: float = 0.0
 var cam_pitch: float = 0.0
-var head_bone_idx: int = -1
-var neck_bone_idx: int = -1
 var spine_bone_idx: int = -1
 var chest_bone_idx: int = -1
-var upper_chest_bone_idx: int = -1
 var body_target_yaw: float = 0.0
 var frozen_move_yaw: float = 0.0
 var head_world_yaw: float = 0.0
@@ -120,22 +134,40 @@ var has_weapon: bool = true
 # ---------- 骑乘 ----------
 var riding: bool = false            # 是否正在骑乘
 var mount_horse: Node3D = null      # 当前骑的马（group "horse"）
+var _mount_base_anim: StringName = &"mount"   # 本次使用的上马动画（mount_left/mount_right，旧资源回退 mount）
+var _ride_side: int = 1             # 当前鞍座侧：+1 Seat / -1 SeatRight
+var _ride_state_nodes: Dictionary = {}   # 右侧骑乘切到镜像 Hips 的 ride_*
 var is_mounting: bool = false       # 正播上马动画（全身）
 var is_dismounting: bool = false    # 正播下马动画（倒放，此期间人物不受控）
 var _saved_layer: int = 1           # 骑乘时保存玩家的碰撞层/掩码，下马还原
 var _saved_mask: int = 1
+@export var mount_prompt: Label               # 屏幕提示（F · 上马）
 @export var ride_offset: Vector3 = Vector3.ZERO   # 骑乘落点相对鞍座的偏移（X左右 / Y高低 / Z前后，随马朝向旋转）
 @export var ride_twist_speed: float = 6.0         # 扭转过渡/回正速度
 @export var ride_combat_blend: float = 3.0        # 骑乘时攻击/非攻击混合速度（越小越慢）
-@export var ride_aim_right_min_deg: float = 15.0  # 骑乘攻击水平角·右侧：最小角（>此角进入右区）
-@export var ride_aim_right_max_deg: float = 120.0 # 骑乘攻击水平角·右侧：最大角
-@export var ride_aim_left_min_deg: float = 15.0   # 骑乘攻击水平角·左侧：最小角（<-此角进入左区）
-@export var ride_aim_left_max_deg: float = 120.0  # 骑乘攻击水平角·左侧：最大角
+@export_group("骑乘瞄准·左右劈")
+@export var ride_aim_right_min_deg: float = 15.0  # 左右劈·右侧：最小角（>此角进入右区）
+@export var ride_aim_right_max_deg: float = 120.0 # 左右劈·右侧：最大角
+@export var ride_aim_left_min_deg: float = 15.0   # 左右劈·左侧：最小角（<-此角进入左区）
+@export var ride_aim_left_max_deg: float = 120.0  # 左右劈·左侧：最大角
+@export_group("骑乘瞄准·上劈")
+@export var ride_aim_up_right_min_deg: float = 15.0  # 上劈·右侧：最小角
+@export var ride_aim_up_right_max_deg: float = 90.0  # 上劈·右侧：最大角
+@export var ride_aim_up_left_min_deg: float = 15.0   # 上劈·左侧：最小角
+@export var ride_aim_up_left_max_deg: float = 90.0   # 上劈·左侧：最大角
+@export_group("骑乘瞄准·下刺")
+@export var ride_aim_thrust_right_min_deg: float = 15.0  # 下刺·右侧：最小角
+@export var ride_aim_thrust_right_max_deg: float = 60.0  # 下刺·右侧：最大角
+@export var ride_aim_thrust_left_min_deg: float = 15.0   # 下刺·左侧：最小角
+@export var ride_aim_thrust_left_max_deg: float = 60.0   # 下刺·左侧：最大角
+@export_group("骑乘瞄准·通用")
 @export var ride_aim_turn_speed: float = 1.5      # 骑乘攻击方向换侧过渡角速度(弧度/秒)：越小越慢；时长=需转角度/此值
+@export var ride_aim_front_free_pitch_deg: float = 30.0  # 瞄准俯仰高于此角时取消正前 min 限制（可直接朝正前攻击）
+@export var ride_aim_front_free_blend_deg: float = 8.0   # 低于阈值后 min 从 0 渐变到完整值的过渡角度（防止瞬间转向）
 var _ride_anchor: Transform3D = Transform3D()     # 当前鞍座（骨骼锚点）世界变换
 var _ride_twist: float = 0.0                      # 平滑后的扭转量(-1..1)
 var _ride_aim_yaw: float = 0.0                    # 平滑后的骑乘攻击水平角（相对马正前）
-var _ride_aim_side: int = 1                       # 当前攻击侧：+1 右 / -1 左（镜头进入另一侧有效区才切）
+var _ride_aim_side: int = 1                       # 当前攻击侧：+1 左 / -1 右（越过中线即切）
 var _ride_aim_switching: bool = false             # 是否正在换侧限速过渡
 # 弹簧骨骼（布娃娃式次级运动）参数
 @export var spring_stiffness: float = 0.1   # 先调低看弹簧是否生效
@@ -157,20 +189,20 @@ func _ready():
 			blend_node = tree.get_node("body_blend")
 			# 运行时给 move 状态机加上马/下马状态，并生成倒放的 mount_rev（不改 .tscn）
 			_ensure_mount_states(tree.get_node("move_state"))
+			if tree.has_node("attack_state"):
+				_setup_ride_attack_anims(tree.get_node("attack_state"))
 		print("[player] body_blend 节点 = ", blend_node)
 	_setup_spring_bones()
 
 	cam_target = cam_default_marker.position
 	camera_3d.position = cam_target
 
-	head_bone_idx = skeleton.find_bone(head_bone_name)
-	neck_bone_idx = skeleton.find_bone(neck_bone_name)
 	spine_bone_idx = skeleton.find_bone(spine_bone_name)
 	chest_bone_idx = skeleton.find_bone(chest_bone_name)
-	upper_chest_bone_idx = skeleton.find_bone(upper_chest_bone_name)
 
 # ============================================================
 func _process(delta: float):
+	_update_mount_prompt()
 	# 延迟到第一帧再初始化状态机（_ready 时动画树还没准备好）
 	if not initialized:
 		initialized = true
@@ -225,8 +257,13 @@ func _process(delta: float):
 # 上下半身分层的骨骼遮罩已配在 player.tscn 的 body_blend(Blend2) 节点上（见编辑筛选轨道）
 # ============================================================
 func _input(event: InputEvent):
-	# 下马动画期间人物不受控
+	# 下马动画期间人物不受控，但镜头仍然可以转
 	if is_dismounting:
+		if event is InputEventMouseMotion:
+			cam_yaw += -event.relative.x * 0.002
+			cam_pitch += -event.relative.y * 0.002
+			cam_pitch = clamp(cam_pitch, CAM_PITCH_MIN, CAM_PITCH_MAX)
+			camera_pivot.rotation = Vector3(cam_pitch, cam_yaw, 0.0)
 		return
 	if event is InputEventKey and event.keycode == KEY_ESCAPE and event.pressed:
 		if Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
@@ -258,13 +295,13 @@ func _input(event: InputEvent):
 		elif not event.pressed:
 			is_holding_cam = false
 			cam_returning = true                              # 松开后开始回归
-			camera_3d.position = cam_hold_marker.position     # ① 机位秒切到「悬停机位」
+			camera_3d.position = _cam_hold_marker_pos()     # ① 机位秒切到「悬停机位」（骑乘用专用机位）
 			# 视角也秒切回按住前，这样前进方向不变（往北走还是往北走）
 			cam_yaw = saved_cam_yaw
 			cam_pitch = saved_cam_pitch
 			camera_pivot.rotation = Vector3(cam_pitch, cam_yaw, 0.0)
 		if is_holding_cam:
-			cam_target = cam_hold_marker.position
+			cam_target = _cam_hold_marker_pos()
 		else:
 			cam_target = _cam_base_marker_pos()
 
@@ -309,21 +346,72 @@ func _input(event: InputEvent):
 # ============================================================
 # 骑乘
 # ============================================================
-func _try_mount():
-	var best: Node3D = null
-	var best_d: float = 3.5
+# 返回最近的、玩家位于其 MountArea（矩形）内的马；side=0 让 _mount 按玩家所在侧判断
+func _find_mount_target() -> Dictionary:
+	var best: Dictionary = {}
+	var best_d: float = INF
 	for h in get_tree().get_nodes_in_group("horse"):
-		var d: float = global_position.distance_to((h as Node3D).global_position)
+		var horse := h as Node3D
+		if not (horse.has_method("can_mount") and horse.can_mount(self)):
+			continue
+		# 必须镜头朝向马匹才能上马
+		var to_horse: Vector3 = horse.global_position - global_position
+		to_horse.y = 0.0
+		if to_horse.length_squared() > 0.0001:
+			var view_forward: Vector3 = -Vector3(sin(cam_yaw), 0.0, cos(cam_yaw))
+			if camera_3d:
+				view_forward = -camera_3d.global_transform.basis.z
+				view_forward.y = 0.0
+			if view_forward.length_squared() > 0.0001 and view_forward.normalized().dot(to_horse.normalized()) < 0.5:   # 约 ±60°
+				continue
+		var d: float = global_position.distance_to(horse.global_position)
 		if d < best_d:
 			best_d = d
-			best = h as Node3D
-	if best:
-		_mount(best)
+			best = {"horse": horse, "side": 0}
+	return best
 
-func _mount(h: Node3D):
+func _try_mount():
+	var target: Dictionary = _find_mount_target()
+	if not target.is_empty():
+		_mount(target["horse"] as Node3D)
+
+func _update_mount_prompt() -> void:
+	if mount_prompt == null:
+		return
+	var can_mount: bool = not riding and not is_mounting and not is_dismounting and health > 0
+	if can_mount:
+		can_mount = not _find_mount_target().is_empty()
+	mount_prompt.visible = can_mount
+
+func _mount_anim_for_side(side: int) -> StringName:
+	var ap: AnimationPlayer = null
+	if animation_tree and animation_tree.anim_player != NodePath(""):
+		ap = animation_tree.get_node_or_null(animation_tree.anim_player) as AnimationPlayer
+	if ap and ap.has_animation("mount_left"):
+		if side < 0 and ap.has_animation("mount_right"):
+			return &"mount_right"
+		return &"mount_left"
+	return &"mount"   # 旧 glb 只有 mount，先回退
+
+func _mount(h: Node3D, side: int = 0):
+	# 有传入侧就用它；否则按玩家在马哪一侧判断（-X=左 / +X=右）
+	var approach_side: int = side
+	if approach_side == 0:
+		var side_dot: float = (global_position - h.global_position).dot(h.global_transform.basis.x.normalized())
+		approach_side = 1 if side_dot < 0.0 else -1
+	_mount_base_anim = _mount_anim_for_side(approach_side)
+	_ride_side = approach_side
+	_set_ride_anim_side(_ride_side)
 	mount_horse = h
+	var start_seat: Transform3D = h.rider_anchor(_ride_side) if h.has_method("rider_anchor") else h.global_transform
+	global_position = start_seat.origin
+	global_rotation = Vector3(0.0, start_seat.basis.get_euler().y, 0.0)
 	riding = true                       # 上马动画期间即可控制马
 	is_mounting = true
+	_set_ride_attack_anims(true)        # 左右劈切到骑乘专用动画
+	_lateral_attack_phase = 0
+	_moving_right = false
+	_moving_left = false
 	h.set("has_rider", true)
 	h.set("rider", self)
 	if weapon_hitbox:
@@ -335,26 +423,45 @@ func _mount(h: Node3D):
 	_saved_mask = collision_mask
 	collision_layer = 0
 	collision_mask = 0
+	if spring_bones:
+		spring_bones.set_active(true)   # 上马一开始就开，避免播完瞬间才激活造成抽搐
 	_update_riding()
 	if move_sm:
-		move_sm.start(&"mount")          # 全身播放上马动画
-	await get_tree().create_timer(_get_anim_length("mount", 1.0)).timeout
+		move_sm.start(_mount_base_anim)   # 全身播放对应侧的上马动画
+	await get_tree().create_timer(_get_anim_length(String(_mount_base_anim), 1.0)).timeout
 	is_mounting = false                  # 播完：下半身保持末帧，上半身恢复常规
 
 func _dismount():
 	if mount_horse == null:
 		return
 	is_dismounting = true
+	mount_horse.set("steer_locked", true)   # 下马动画期间禁止马转向
+	# 下马侧按摄像机视角定（左右共用同一骑乘机位，镜头在哪侧就从哪侧下）
+	var cam_side: float = 0.0
+	if camera_3d:
+		cam_side = (camera_3d.global_position - mount_horse.global_position).dot(
+			mount_horse.global_transform.basis.x.normalized())
+	var dismount_side: int = 1 if cam_side < 0.0 else -1
+	_ride_side = dismount_side
+	_set_ride_anim_side(_ride_side)
+	var dismount_base: StringName = _mount_anim_for_side(dismount_side)
 	if move_sm:
-		move_sm.start(&"mount_rev")      # 倒放下马动画
-	await get_tree().create_timer(_get_anim_length("mount", 1.0)).timeout
+		move_sm.start(StringName(String(dismount_base) + "_rev"))   # 倒放同侧下马动画
+	await get_tree().create_timer(_get_anim_length(String(dismount_base), 1.0)).timeout
 	mount_horse.set("has_rider", false)
 	mount_horse.set("rider", null)
-	# 下到马的左侧
-	global_position = mount_horse.global_position + mount_horse.global_transform.basis.x * -1.4
+	mount_horse.set("steer_locked", false)
+	# 下到左右对应的地面侧
+	global_position = mount_horse.global_position + mount_horse.global_transform.basis.x * (-1.4 * dismount_side)
+	var dismount_yaw: float = global_rotation.y
+	global_rotation = Vector3(0.0, dismount_yaw, 0.0)
 	velocity = Vector3.ZERO
 	mount_horse = null
 	riding = false
+	_set_ride_attack_anims(false)       # 下马恢复地面左右劈
+	_lateral_attack_phase = 0
+	_moving_right = false
+	_moving_left = false
 	collision_layer = _saved_layer
 	collision_mask = _saved_mask
 	if weapon_area:
@@ -365,6 +472,10 @@ func _dismount():
 	_ride_aim_yaw = 0.0
 	_ride_aim_side = 1
 	_ride_aim_switching = false
+	_mount_base_anim = &"mount"
+	_ride_side = 1
+	_set_ride_anim_side(1)
+	last_anim_state = ""   # 让下马后第一帧重新 travel 到当前移动动画（否则按住移动键不播跑）
 	if skeleton:
 		skeleton.clear_bones_global_pose_override()
 	is_dismounting = false
@@ -373,14 +484,24 @@ func _update_riding(_delta: float = 0.0):
 	if mount_horse == null:
 		riding = false
 		return
+	var spd: float = absf(float(mount_horse.get("speed")))
 	var anchor: Transform3D = mount_horse.global_transform
 	if mount_horse.has_method("rider_anchor"):
-		anchor = mount_horse.rider_anchor()
+		anchor = mount_horse.rider_anchor(_ride_side)
+	# 完整跟随 Seat 骨骼（位置 + 旋转），人物真正绑在马的鞍座骨骼上
 	_ride_anchor = anchor * Transform3D(Basis(), ride_offset)
-	global_transform = _ride_anchor            # 刚性贴锚点；拖尾交给弹簧骨骼，前倾交给骑乘动画
-	# 按马的速度选骑乘前倾动作（走/快步/跑步/飞奔）
-	if riding and not is_mounting and not is_dismounting and move_sm:
-		var spd: float = absf(float(mount_horse.get("speed")))
+	global_transform = _ride_anchor            # 刚性贴锚点；拖尾交给骨骼/动画
+	if is_mounting:
+		# 上马动画期间也跟马走；只暂停步态切换
+		if not is_holding_cam:
+			var mount_cam: Marker3D = _ride_cam_marker()
+			if mount_cam:
+				cam_target = mount_cam.position
+		velocity = Vector3.ZERO
+		return
+	# 按马的速度选骑乘前倾动作（走/快步/跑步/飞奔）；左右上马都播这 4 个
+	# 马静止时保持上马动画的末帧
+	if riding and not is_mounting and not is_dismounting and move_sm and spd >= 0.1:
 		var gait: String = "walk"
 		if spd >= float(mount_horse.get("canter_speed")):
 			gait = "gallop"
@@ -390,8 +511,10 @@ func _update_riding(_delta: float = 0.0):
 			gait = "trot"
 		move_sm.travel(StringName("ride_" + gait))   # 步态前倾（按速度）
 	# 按住 ~ 时不要每帧覆盖机位（否则 ~ 的悬停机位会被立刻刷回骑乘机位 → 按了没反应）
-	if cam_ride_marker and not is_holding_cam:
-		cam_target = cam_ride_marker.position
+	if not is_holding_cam:
+		var ride_cam: Marker3D = _ride_cam_marker()
+		if ride_cam:
+			cam_target = ride_cam.position   # 上马动画期间按上马侧；动画结束左右共用同一骑乘机位
 	if spring_bones:
 		spring_bones.set_active(not is_mounting and not is_dismounting)   # 骑乘态才开弹簧骨骼
 	velocity = Vector3.ZERO
@@ -440,26 +563,82 @@ func _apply_ride_twist(delta: float) -> void:
 		var q: Quaternion = Quaternion(Vector3.UP, -float(pair[1]) * _ride_twist)
 		skeleton.set_bone_global_pose_override(idx, Transform3D(Basis(q) * cur.basis, cur.origin), 1.0, true)
 
+func _setup_ride_attack_anims(sm) -> void:
+	_attack_anim_nodes.clear()
+	if sm == null:
+		return
+	for state in RIDE_ATTACK_SWAP:
+		if sm.has_node(state):
+			var n = sm.get_node(state)
+			if n is AnimationNodeAnimation:
+				_attack_anim_nodes[state] = n
+	print("[player] 骑乘攻击动画节点 = ", _attack_anim_nodes.size())
+
+func _set_ride_attack_anims(use_ride: bool) -> void:
+	if _attack_anim_nodes.is_empty():
+		return
+	var ap: AnimationPlayer = null
+	if animation_tree.anim_player != NodePath(""):
+		ap = animation_tree.get_node_or_null(animation_tree.anim_player) as AnimationPlayer
+	for state in _attack_anim_nodes:
+		var node: AnimationNodeAnimation = _attack_anim_nodes[state]
+		var anim: StringName = StringName("s_" + String(state))
+		if use_ride:
+			var ride_anim: StringName = RIDE_ATTACK_SWAP[state]
+			if ap == null or ap.has_animation(ride_anim):
+				anim = ride_anim
+		node.animation = anim
+
 func _ensure_mount_states(machine) -> void:
 	# 运行时给 move 状态机加上马/下马状态；并生成倒放的 mount_rev（不改 .tscn）
 	var ap: AnimationPlayer = null
 	if animation_tree.anim_player != NodePath(""):
 		ap = animation_tree.get_node_or_null(animation_tree.anim_player) as AnimationPlayer
-	if ap and ap.has_animation("mount"):
-		ap.get_animation("mount").loop_mode = Animation.LOOP_NONE
-		if not ap.has_animation("mount_rev"):
-			var libs := ap.get_animation_library_list()
-			if libs.size() > 0:
-				ap.get_animation_library(libs[0]).add_animation("mount_rev", _make_reversed(ap.get_animation("mount")))
+	# 上马基础动画：新资源有 mount_left/right；旧资源回退 mount
+	var mount_bases: Array[StringName] = []
+	if ap:
+		if ap.has_animation("mount_left"):
+			mount_bases.append(&"mount_left")
+			if ap.has_animation("mount_right"):
+				mount_bases.append(&"mount_right")
+		elif ap.has_animation("mount"):
+			mount_bases.append(&"mount")
+		for base in mount_bases:
+			ap.get_animation(base).loop_mode = Animation.LOOP_NONE
+			var rev_name: StringName = StringName(String(base) + "_rev")
+			if not ap.has_animation(rev_name):
+				var libs := ap.get_animation_library_list()
+				if libs.size() > 0:
+					ap.get_animation_library(libs[0]).add_animation(String(rev_name), _make_reversed(ap.get_animation(base)))
 	if machine == null:
 		return
-	for s in [["mount", "mount"], ["mount_rev", "mount_rev"],
-			["ride_walk", "ride_walk"], ["ride_trot", "ride_trot"],
+	var state_names: Array[String] = []
+	for base in mount_bases:
+		state_names.append(String(base))
+		state_names.append(String(base) + "_rev")
+	for s in state_names:
+		if not machine.has_node(s):
+			var n := AnimationNodeAnimation.new()
+			n.animation = StringName(s)
+			machine.add_node(s, n)
+	for s in [["ride_walk", "ride_walk"], ["ride_trot", "ride_trot"],
 			["ride_canter", "ride_canter"], ["ride_gallop", "ride_gallop"]]:
 		if not machine.has_node(s[0]):
 			var n := AnimationNodeAnimation.new()
 			n.animation = StringName(s[1])
 			machine.add_node(s[0], n)
+	_ride_state_nodes.clear()
+	for s in ["ride_walk", "ride_trot", "ride_canter", "ride_gallop"]:
+		if machine.has_node(s):
+			var node := machine.get_node(s) as AnimationNodeAnimation
+			if node:
+				_ride_state_nodes[s] = node
+		if ap and ap.has_animation(s):
+			var right_name: StringName = StringName(s + "_right")
+			if not ap.has_animation(right_name):
+				var libs := ap.get_animation_library_list()
+				if libs.size() > 0:
+					ap.get_animation_library(libs[0]).add_animation(String(right_name), _make_right_ride(ap.get_animation(s)))
 	# 4 个骑乘态之间加交叉淡化转场（0.3s）→ travel 切换时渐变
 	var ride_states := ["ride_walk", "ride_trot", "ride_canter", "ride_gallop"]
 	for from_name in ride_states:
@@ -471,6 +650,32 @@ func _ensure_mount_states(machine) -> void:
 				trans.xfade_time = 0.3
 				trans.switch_mode = AnimationNodeStateMachineTransition.SWITCH_MODE_IMMEDIATE
 				machine.add_transition(from_name, to_name, trans)
+	# 上马状态 -> 骑乘步态：也加交叉淡化，避免上马结束后姿势瞬移
+	for base in mount_bases:
+		var from_name: String = String(base)
+		if not machine.has_node(from_name):
+			continue
+		for to_name in ride_states:
+			if not machine.has_transition(from_name, to_name):
+				var t2 := AnimationNodeStateMachineTransition.new()
+				t2.xfade_time = 0.3
+				t2.switch_mode = AnimationNodeStateMachineTransition.SWITCH_MODE_IMMEDIATE
+				machine.add_transition(from_name, to_name, t2)
+	# 下马倒放状态 -> 地面移动状态：否则下马后 travel 没有路径，下半身会卡在倒放动作
+	var foot_states := ["idle_weapon", "walk_forward_weapon", "run_forward_weapon",
+		"walk_back_weapon", "run_back_weapon", "jump",
+		"idle_empty", "walk_forward_empty", "run_forward_empty",
+		"walk_back_empty", "run_back_empty"]
+	for base in mount_bases:
+		var rev: String = String(base) + "_rev"
+		if not machine.has_node(rev):
+			continue
+		for to_name in foot_states:
+			if machine.has_node(to_name) and not machine.has_transition(rev, to_name):
+				var t3 := AnimationNodeStateMachineTransition.new()
+				t3.xfade_time = 0.2
+				t3.switch_mode = AnimationNodeStateMachineTransition.SWITCH_MODE_IMMEDIATE
+				machine.add_transition(rev, to_name, t3)
 
 func _make_reversed(src: Animation) -> Animation:
 	var rev := Animation.new()
@@ -485,6 +690,27 @@ func _make_reversed(src: Animation) -> Animation:
 			var nt: float = src.length - src.track_get_key_time(t, sk)
 			rev.track_insert_key(idx, nt, src.track_get_key_value(t, sk))
 	return rev
+
+func _make_right_ride(src: Animation) -> Animation:
+	# 右侧骑乘：镜像 Hips 的横向位置，匹配 SeatRight 上的右侧上马末帧
+	var out: Animation = src.duplicate(true)
+	for t in out.get_track_count():
+		if not String(out.track_get_path(t)).ends_with("Skeleton3D:Hips"):
+			continue
+		if out.track_get_type(t) != Animation.TYPE_POSITION_3D:
+			continue
+		for k in out.track_get_key_count(t):
+			var v: Vector3 = out.track_get_key_value(t, k)
+			v.x = -v.x
+			out.track_set_key_value(t, k, v)
+	return out
+
+func _set_ride_anim_side(side: int) -> void:
+	for s in _ride_state_nodes.keys():
+		var node := _ride_state_nodes[s] as AnimationNodeAnimation
+		if node == null:
+			continue
+		node.animation = StringName(String(s) + "_right") if side < 0 else StringName(s)
 
 # ============================================================
 func _physics_process(delta: float):
@@ -510,6 +736,9 @@ func _update_movement(delta: float):
 	var world_dir: Vector3 = (cam_fwd * input.y + cam_rgt * input.x).normalized()
 
 	is_moving = input.length() > 0.1
+	_moving_right = is_moving and world_dir.dot(cam_rgt) > 0.1
+	_moving_left = is_moving and world_dir.dot(cam_rgt) < -0.1
+	_update_lateral_attack_phase()   # 按举刀/挥刀/收刀动画帧决定下身朝右还是朝左
 
 	# 非走路模式（未开 CapsLock）下所有移动都跑，含后退（速度与动画都用跑）
 	var is_running: bool = not is_walking
@@ -532,16 +761,13 @@ func _update_movement(delta: float):
 		velocity.x = jump_vel.x
 		velocity.z = jump_vel.z
 
-	# 身体目标朝向：
-	#   左右举剑的「后退」（右举剑按左 / 左举剑按右）→ 身体朝攻击方向，这样后退跑/走时腿才朝移动方向迈
-	#   其余 → 根部照常朝向移动方向（腿跟着转）；不动时朝镜头
-	var attack_facing: bool = (is_charging or is_attacking or is_recovering) and (current_attack == "left" or current_attack == "right")
-	var ref_fwd: Vector3 = Vector3.ZERO
-	var back_moving: bool = false
-	if attack_facing:
-		ref_fwd = cam_rgt if current_attack == "right" else -cam_rgt
-		# 后退判定收窄：只认「正对攻击反方向」（正西）那一段，正北→正西（不含正西）都算前进
-		back_moving = world_dir.length() > 0.1 and ref_fwd.dot(world_dir.normalized()) < -0.9
+	# 攻击中下身默认按正常移动朝向；只有「移动方向与攻击方向相同」且挥刀到第14帧后，才转到另一侧
+	var turn_to_opposite: bool = _lateral_attack_phase == 2
+	var same_dir: bool = false
+	if current_attack == "right":
+		same_dir = _moving_right
+	elif current_attack == "left":
+		same_dir = _moving_left
 
 	# 停止瞬间：记住当时上身朝向，之后下身朝它平滑回正、上身保持不变
 	if was_moving and not is_moving:
@@ -557,8 +783,10 @@ func _update_movement(delta: float):
 
 	if not is_on_floor():
 		body_target_yaw = move_yaw   # 空中：下身朝镜头（移动键不控制转身）
-	elif back_moving:
-		body_target_yaw = atan2(-ref_fwd.x, -ref_fwd.z)
+	elif turn_to_opposite:
+		# 同向移动且挥刀到第14帧后：下身转到另一侧（左劈↔右劈镜像）
+		var turn_dir: Vector3 = cam_rgt if current_attack == "right" else -cam_rgt
+		body_target_yaw = atan2(turn_dir.x, turn_dir.z)
 	elif world_dir.length() > 0.1:
 		var body_dir: Vector3
 		if input.y == 0:
@@ -583,10 +811,9 @@ func _update_movement(delta: float):
 			move_state = "jump"   # 离地或在上升（起跳当帧）就播跳跃
 		elif input.length() < 0.1:
 			move_state = "idle_" + suffix
-		elif back_moving:
-			move_state = back_state
-		elif attack_facing:
-			move_state = ("run_forward_" if is_running else "walk_forward_") + suffix
+		elif turn_to_opposite:
+			# 下身已转到另一侧：同向移动相对身体是后退，否则前进
+			move_state = back_state if same_dir else ("run_forward_" if is_running else "walk_forward_") + suffix
 		elif input.y > 0.1:
 			# 后退：默认跑步后退（走路模式才用走路后退）
 			move_state = back_state
@@ -596,10 +823,62 @@ func _update_movement(delta: float):
 			move_sm.travel(StringName(move_state))
 			last_anim_state = move_state
 
+# 地面左右劈下身阶段：0=正常 / 1=正常（举刀~挥刀14帧） / 2=转到另一侧（14帧~收刀5帧）
+# 只有「右走右劈 / 左走左劈」才进入 2；反向移动不触发
+func _update_lateral_attack_phase() -> void:
+	if riding or attack_sm == null or (current_attack != "right" and current_attack != "left"):
+		_lateral_attack_phase = 0
+		return
+	if is_charging:
+		_lateral_attack_phase = 1
+		return
+	var node: StringName = attack_sm.get_current_node()
+	var pos: float = attack_sm.get_current_play_position()
+	var swing_node: StringName = StringName("attack_" + current_attack + "_swing")
+	var recover_node: StringName = StringName("attack_" + current_attack + "_recover")
+	var same_dir: bool = _moving_right if current_attack == "right" else _moving_left
+	if node == swing_node:
+		var swing_len: float = _get_anim_length(String(swing_node), 0.42)
+		if pos < swing_len * LATERAL_SWING_TURN_T:
+			_lateral_attack_phase = 1
+		elif same_dir or _lateral_attack_phase == 2:
+			_lateral_attack_phase = 2   # 第14帧后且同向移动：锁存转向另一侧
+	elif node == recover_node:
+		var recover_len: float = _get_anim_length(String(recover_node), 0.4)
+		if pos >= recover_len * LATERAL_RECOVER_RESTORE_T:
+			_lateral_attack_phase = 0   # 收刀第5帧：恢复正常
+	elif is_attacking or is_recovering:
+		pass   # 切换过渡帧：保持当前阶段
+	else:
+		_lateral_attack_phase = 0
+
+# 上马动画期间用上马侧的镜像机位；动画结束回到左右共用的骑乘机位
+func _ride_cam_marker() -> Marker3D:
+	if _ride_side < 0 and cam_ride_marker_right:
+		return cam_ride_marker_right
+	return cam_ride_marker
+
+func _ride_hold_marker() -> Marker3D:
+	if _ride_side < 0 and cam_ride_hold_marker_right:
+		return cam_ride_hold_marker_right
+	return cam_ride_hold_marker
+
 # ============================================================
 # 松开 ~ 的归位目标：骑乘回骑乘机位、否则回默认机位
 func _cam_base_marker_pos() -> Vector3:
-	return cam_ride_marker.position if riding else cam_default_marker.position
+	if riding:
+		var m: Marker3D = _ride_cam_marker()
+		if m:
+			return m.position
+	return cam_default_marker.position
+
+# 按住 ~ 的观察机位：骑乘用专用 marker，没有配置时回退到步行的 CamHold
+func _cam_hold_marker_pos() -> Vector3:
+	if riding:
+		var m: Marker3D = _ride_hold_marker()
+		if m:
+			return m.position
+	return cam_hold_marker.position
 
 func _update_camera(delta: float):
 	if cam_returning:
@@ -689,19 +968,23 @@ func _apply_aim_bend(aim: float, delta: float):
 	# 同样归一化到最短角，避免腰部扭成麻花
 	var dy: float = wrapf(upper_yaw - rotation.y, -PI, PI)
 	if riding:
-		# 骑乘：水平攻击角限制（正前±15°、正后±60° 禁止）
-		# 换侧判定：不是中线，而是「镜头进入另一侧的有效区」（越过对侧 ±min 边界）才切
-		var rlo: float = deg_to_rad(ride_aim_right_min_deg)
-		var llo: float = deg_to_rad(ride_aim_left_min_deg)
+		# 骑乘：水平攻击角限制（左右劈/上劈/下刺各自独立）
+		# 换侧判定：越过中线（马正前 dy=0）即切到另一侧
 		var switched: bool = false
-		# Godot: +yaw = 左、-yaw = 右。side=+1 表示正角(左)侧，-1 表示负角(右)侧
-		if _ride_aim_side > 0 and dy <= -rlo:
-			_ride_aim_side = -1
-			switched = true
-		elif _ride_aim_side < 0 and dy >= llo:
-			_ride_aim_side = 1
-			switched = true
-		var target: float = _clamp_ride_aim(dy, _ride_aim_side)
+		# 只在挥刀动画期间锁死攻击侧；举刀/收刀阶段允许换侧
+		var attack_locked: bool = is_attacking
+		if not attack_locked:
+			# Godot: +yaw = 左、-yaw = 右。side=+1 表示正角(左)侧，-1 表示负角(右)侧
+			if _ride_aim_side > 0 and dy < 0.0:
+				_ride_aim_side = -1
+				switched = true
+			elif _ride_aim_side < 0 and dy > 0.0:
+				_ride_aim_side = 1
+				switched = true
+		# 瞄准抬得够高时刃已离开马身，取消正前死区（允许直接朝马头正前挥/刺）
+		# 低于阈值时用 min 缩放做过渡，避免从无限制切到有限制时瞬间转向
+		var front_min_scale: float = _ride_front_min_scale(aim)
+		var target: float = _clamp_ride_aim(dy, _ride_aim_side, front_min_scale)
 		if switched:
 			_ride_aim_switching = true
 		if _ride_aim_switching:
@@ -716,24 +999,83 @@ func _apply_aim_bend(aim: float, delta: float):
 			_ride_aim_yaw = target   # 同侧有效范围内：即时跟随，无延迟
 		dy = _ride_aim_yaw
 	var yaw_q: Quaternion = Quaternion(Vector3.UP, dy)
+	if not riding:
+		# 与非战斗移动时相同的分配（Spine 0.5 / Chest 1.0）：
+		# 否则进入攻击时 Chest 覆盖突然消失，会表现为腰部突变
+		var yaw_half: Quaternion = Quaternion(Vector3.UP, dy * 0.5)
+		var cur_spine: Transform3D = skeleton.get_bone_global_pose(spine_bone_idx) if spine_bone_idx >= 0 else Transform3D()
+		var cur_chest: Transform3D = skeleton.get_bone_global_pose(chest_bone_idx) if chest_bone_idx >= 0 else Transform3D()
+		if spine_bone_idx >= 0:
+			var rest: Transform3D = skeleton.get_bone_global_rest(spine_bone_idx)
+			# 俯仰轴取「举剑(转向瞄准)后的静止朝向」的侧轴并右转90°：各攻击方向一致，不随具体动画偏
+			var aim_frame: Basis = Basis(yaw_q) * rest.basis
+			var lateral: Vector3 = aim_frame.x.normalized().rotated(aim_frame.y.normalized(), -PI * 0.5)
+			var pitch_q: Quaternion = Quaternion(lateral, clampf(-aim, -CAM_PITCH_MAX, -CAM_PITCH_MIN))
+			var aimed: Basis = Basis(yaw_half) * cur_spine.basis
+			skeleton.set_bone_global_pose_override(spine_bone_idx, Transform3D(Basis(pitch_q) * aimed, cur_spine.origin), 1.0, true)
+		if chest_bone_idx >= 0:
+			skeleton.set_bone_global_pose_override(chest_bone_idx, Transform3D(Basis(yaw_q) * cur_chest.basis, cur_chest.origin), 1.0, true)
+		return
 	if spine_bone_idx >= 0:
 		var cur: Transform3D = skeleton.get_bone_global_pose(spine_bone_idx)
 		var rest: Transform3D = skeleton.get_bone_global_rest(spine_bone_idx)
-		# 俯仰轴取「举剑(转向瞄准)后的静止朝向」的侧轴并右转90°：各攻击方向一致，不随具体动画偏
 		var aim_frame: Basis = Basis(yaw_q) * rest.basis
 		var lateral: Vector3 = aim_frame.x.normalized().rotated(aim_frame.y.normalized(), -PI * 0.5)
 		var pitch_q: Quaternion = Quaternion(lateral, clampf(-aim, -CAM_PITCH_MAX, -CAM_PITCH_MIN))
-		# 实际姿态仍用当前动画姿势，再叠世界空间俯仰
 		var aimed: Basis = Basis(yaw_q) * cur.basis
 		skeleton.set_bone_global_pose_override(spine_bone_idx, Transform3D(Basis(pitch_q) * aimed, cur.origin), 1.0, true)
 
-# 骑乘攻击的水平角限制（相对马正前方，正=右）；四种攻击方式判定不受影响，只夹这个角
-func _clamp_ride_aim(delta_yaw: float, side: int) -> float:
+# 骑乘一次攻击开始时锁定攻击侧：左攻击=左侧，右攻击=右侧；上/下按当前镜头侧
+func _lock_ride_aim_side() -> void:
+	if not riding:
+		return
+	# 只锁住举剑结束/挥剑第一帧时镜头所在的侧；
+	# 不要按 current_attack 的左/右劈方向强制把侧改回上马侧
+	var upper_yaw: float = frozen_move_yaw if cam_lock else cam_yaw
+	var dy: float = wrapf(upper_yaw - rotation.y, -PI, PI)
+	var new_side: int = 1 if dy >= 0.0 else -1
+	if new_side != _ride_aim_side:
+		_ride_aim_side = new_side
+		_ride_aim_switching = true
+
+# 骑乘攻击的水平角限制（相对马正前方，正=左、负=右）
+# 左右劈 / 上劈 / 下刺各自独立；格挡沿用左右劈的限幅
+func _clamp_ride_aim(delta_yaw: float, side: int, front_min_scale: float = 1.0) -> float:
+	var dir: String = "" if is_blocking else current_attack
+	var lim: Vector2 = _ride_aim_limits(dir, side, front_min_scale)
+	return clampf(delta_yaw, lim.x, lim.y)
+
+# 正前 min 限制的缩放：高于阈值=0（无限制）；低于阈值后按 blend 角度从 0 渐变到 1
+func _ride_front_min_scale(pitch: float) -> float:
+	var thr: float = deg_to_rad(ride_aim_front_free_pitch_deg)
+	if pitch >= thr:
+		return 0.0
+	var band: float = deg_to_rad(maxf(ride_aim_front_free_blend_deg, 0.001))
+	return clampf((thr - pitch) / band, 0.0, 1.0)
+
+func _ride_aim_limits(dir: String, side: int, front_min_scale: float = 1.0) -> Vector2:
+	var lo: float = ride_aim_left_min_deg
+	var hi: float = ride_aim_left_max_deg
+	if dir == "up":
+		lo = ride_aim_up_left_min_deg
+		hi = ride_aim_up_left_max_deg
+	elif dir == "thrust":
+		lo = ride_aim_thrust_left_min_deg
+		hi = ride_aim_thrust_left_max_deg
+	if side < 0:
+		lo = ride_aim_right_min_deg
+		hi = ride_aim_right_max_deg
+		if dir == "up":
+			lo = ride_aim_up_right_min_deg
+			hi = ride_aim_up_right_max_deg
+		elif dir == "thrust":
+			lo = ride_aim_thrust_right_min_deg
+			hi = ride_aim_thrust_right_max_deg
+	lo *= clampf(front_min_scale, 0.0, 1.0)   # 0=正前无限制；1=完整 min
+	# 左侧为正角区间，右侧为负角区间
 	if side > 0:
-		# 正角侧 = 左
-		return clampf(delta_yaw, deg_to_rad(ride_aim_left_min_deg), deg_to_rad(ride_aim_left_max_deg))
-	# 负角侧 = 右
-	return clampf(delta_yaw, -deg_to_rad(ride_aim_right_max_deg), -deg_to_rad(ride_aim_right_min_deg))
+		return Vector2(deg_to_rad(lo), deg_to_rad(hi))
+	return Vector2(-deg_to_rad(hi), -deg_to_rad(lo))
 
 # ============================================================
 # 战斗逻辑
@@ -742,6 +1084,7 @@ func _begin_charge():
 	if is_attacking:
 		return
 	is_charging = true
+	_lateral_attack_phase = 0
 	can_attack = true                   # 举剑了就能挥：清掉上一次的冷却/锁定（否则松手会卡在举剑）
 	attack_started_moving = is_moving   # 记下起手时是否在移动（决定下半身是否用攻击动画）
 	# 攻击方向：鼠标动过（平滑位移长度 > 2px）才更新方向；没动就保持上一次（初始默认「下」/前刺）
@@ -786,6 +1129,7 @@ func _do_attack_by_name(attack_name: String):
 	# 从「开始挥击」这一刻起重新累积鼠标移动，用于判定下一刀方向（输入缓冲）
 	mouse_move_delta = Vector2.ZERO
 	current_attack = attack_name
+	_lock_ride_aim_side()   # 保证直接调用时也按本次攻击方向锁侧
 	weapon_area.attack_dir = current_attack
 	var swing_name: String = "attack_" + current_attack + "_swing"
 	if attack_sm:
@@ -837,6 +1181,11 @@ func _get_anim_length(clip: String, fallback: float) -> float:
 	if animation_tree.anim_player != NodePath(""):
 		var ap: AnimationPlayer = animation_tree.get_node_or_null(animation_tree.anim_player) as AnimationPlayer
 		if ap:
+			# 骑乘左右劈用专用动画的长度（时机对齐）；其余仍按地面动画
+			if riding and RIDE_ATTACK_SWAP.has(clip):
+				var ride_name: StringName = RIDE_ATTACK_SWAP[clip]
+				if ap.has_animation(ride_name):
+					return ap.get_animation(ride_name).get_length()
 			if ap.has_animation(clip):
 				return ap.get_animation(clip).get_length()
 			# 持剑动画带 s_ 前缀
@@ -853,6 +1202,7 @@ func _set_blocking(active: bool):
 		is_charging = false
 		is_attacking = false
 		is_recovering = false
+		_lateral_attack_phase = 0
 		recover_gen += 1   # 令挂起的收招协程提前退出（无条件 +1，不会像 bool 那样残留）
 		attack_gen += 1    # 令挂起的挥砍协程彻底退出（否则挥砍协程醒来时格挡可能已松开，会顶掉格挡/后续攻击）
 		can_attack = true  # 清除挥砍锁定，否则打断后「格挡完再攻击」会被 _do_attack_by_name 的 can_attack 挡掉

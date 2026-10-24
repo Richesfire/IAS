@@ -2,3 +2,6 @@
 .godot/
 *.tmp
 *.godot_bak
+*.bak
+*.bak_*
+*.bak_before_*
