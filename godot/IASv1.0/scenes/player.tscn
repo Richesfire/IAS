@@ -4,9 +4,15 @@
 [ext_resource type="PackedScene" uid="uid://chyc1boaya6b1" path="res://scenes/character_model.tscn" id="2_g2els"]
 [ext_resource type="PackedScene" uid="uid://bq3m7x2p1xa0k" path="res://scenes/weapon.tscn" id="4_weaponscene"]
 
-[sub_resource type="CapsuleShape3D" id="2"]
-radius = 0.30664063
-height = 1.9311489
+[sub_resource type="CapsuleShape3D" id="5_body_shape"]
+radius = 0.14892578
+height = 1.143
+
+[sub_resource type="BoxShape3D" id="6_chest_shape"]
+size = Vector3(0.5210415, 0.5364383, 0.3106)
+
+[sub_resource type="SphereShape3D" id="7_head_shape"]
+radius = 0.12451194
 
 [sub_resource type="AnimationLibrary" id="AnimationLibrary_fjrip"]
 
@@ -69,6 +75,18 @@ animation = &"s_block_up"
 
 [sub_resource type="AnimationNodeAnimation" id="Anim_block_up_recover"]
 animation = &"s_block_up_recover"
+
+[sub_resource type="AnimationNodeAnimation" id="Anim_block_success_up"]
+animation = &"s_block_success_up"
+
+[sub_resource type="AnimationNodeAnimation" id="Anim_block_success_down"]
+animation = &"s_block_success_down"
+
+[sub_resource type="AnimationNodeAnimation" id="Anim_block_success_left"]
+animation = &"s_block_success_left"
+
+[sub_resource type="AnimationNodeAnimation" id="Anim_block_success_right"]
+animation = &"s_block_success_right"
 
 [sub_resource type="AnimationNodeAnimation" id="Anim_death"]
 animation = &"death"
@@ -146,6 +164,14 @@ states/block_up/node = SubResource("Anim_block_up")
 states/block_up/position = Vector2(-100, 660)
 states/block_up_recover/node = SubResource("Anim_block_up_recover")
 states/block_up_recover/position = Vector2(-300, 660)
+states/block_success_up/node = SubResource("Anim_block_success_up")
+states/block_success_up/position = Vector2(-100, 1080)
+states/block_success_down/node = SubResource("Anim_block_success_down")
+states/block_success_down/position = Vector2(100, 1080)
+states/block_success_left/node = SubResource("Anim_block_success_left")
+states/block_success_left/position = Vector2(300, 1080)
+states/block_success_right/node = SubResource("Anim_block_success_right")
+states/block_success_right/position = Vector2(500, 1080)
 states/death/node = SubResource("Anim_death")
 states/death/position = Vector2(340, 940)
 states/hit_empty/node = SubResource("Anim_idle_empty")
@@ -243,17 +269,27 @@ node_connections = [&"output", 0, &"body_blend", &"body_blend", 0, &"move_state"
 
 [node name="Player" type="CharacterBody3D" unique_id=1369614931 groups=["player"]]
 script = ExtResource("1")
+walk_speed = 1.0
+run_speed = 3.0
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=1345717915]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.96731126, 0)
-shape = SubResource("2")
+[node name="BodyCollision" type="CollisionShape3D" parent="." unique_id=1115854824]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5717159, 0.03033948)
+shape = SubResource("5_body_shape")
+
+[node name="ChestCollision" type="CollisionShape3D" parent="." unique_id=1563762803]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.00072553754, 1.3537997, 0.034692377)
+shape = SubResource("6_chest_shape")
+
+[node name="HeadCollision" type="CollisionShape3D" parent="." unique_id=1833504151]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.7385178, 0)
+shape = SubResource("7_head_shape")
 
 [node name="CharacterRig" type="Node3D" parent="." unique_id=1088804194]
-transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 0, 0.075, 0)
+transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 0, 0, 0)
 
 [node name="character" parent="CharacterRig" unique_id=1351488556 instance=ExtResource("2_g2els")]
 
-[node name="Skeleton3D" parent="CharacterRig/character/ren" parent_id_path=PackedInt32Array(1351488556, 2132576753) index="0" unique_id=1880707932]
+[node name="Skeleton3D" parent="CharacterRig/character/ren" parent_id_path=PackedInt32Array(1351488556, 1887988203) index="0" unique_id=217159516]
 bones/0/position = Vector3(-0.00015434623, 0.90970546, -0.04585922)
 bones/0/rotation = Quaternion(0.013501823, 0.70697796, 0.013501851, 0.70697784)
 bones/1/position = Vector3(-8.8191765e-09, -8.010492e-09, 0.1034565)
@@ -283,6 +319,9 @@ bones/18/position = Vector3(-0.00033107476, 0.2556098, 0.00025417557)
 bones/18/rotation = Quaternion(0.17799482, -0.12803108, 0.040150274, 0.97484046)
 bones/19/position = Vector3(-1.0669611e-07, 0.10550078, -1.1269961e-08)
 bones/19/rotation = Quaternion(0.13056104, 0.095972024, 0.118110314, 0.9796903)
+
+[node name="Body" parent="CharacterRig/character/ren/Skeleton3D" index="0" unique_id=1627879746]
+transform = Transform3D(0.99692655, 0, 0, 0, 0.99692655, 0, 0, 0, 0.99692655, 0, 0, 0)
 
 [node name="WeaponSocket" type="BoneAttachment3D" parent="CharacterRig/character/ren/Skeleton3D" index="1" unique_id=1965197613]
 transform = Transform3D(-0.0014129803, 0.9115014, 0.4112956, 0.9999472, -0.0028875656, 0.009834841, 0.010152221, 0.41128805, -0.9114493, -0.099141605, 1.3015901, 0.1886633)

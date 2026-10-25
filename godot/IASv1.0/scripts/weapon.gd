@@ -14,12 +14,14 @@ func _ready():
 	area_entered.connect(_on_area_entered)
 
 func _on_body_entered(body: Node3D):
-	if body.is_in_group(my_group):
+	if damage <= 0.0 or body.is_in_group(my_group):
 		return
 	if body.has_method("take_damage"):
 		body.take_damage(damage, attack_dir)
 
 func _on_area_entered(area: Area3D):
+	if damage <= 0.0:
+		return
 	var parent: Node = area.get_parent()
 	if parent and parent.is_in_group(my_group):
 		return

@@ -1,4 +1,4 @@
-extends CharacterBody3D
+﻿extends CharacterBody3D
 
 # ============================================================
 # 玩家控制器 —— 上半身(战斗) / 下半身(移动) 分层状态机
@@ -60,11 +60,18 @@ const CAM_PITCH_MAX: float = 0.8     # 镜头俯仰上限（抬头）—— 攻�
 
 # ---------- 运行时状态 ----------
 var health: float
+var _health_bar: ProgressBar = null
+var _weapon_contact: bool = false
+var _weapon_damage: float = 25.0
+var _hit_stun: float = 0.0
+var _last_blocked_enemy_serial: int = -1
 var can_attack: bool = true
 var attack_gen: int = 0   # 挥砍代次：格挡打断挥砍时 +1，令旧挥砍协程彻底退出（只看 is_blocking 会漏掉「格挡已松开」的时机）
 var is_charging: bool = false
 var is_blocking: bool = false
 var is_attacking: bool = false
+var _clash_freeze_t: float = 0.0
+var _blocked_attack_gen: int = -1
 var current_attack: String = ""
 var block_dir: String = ""
 var attack_buffered: bool = false   # 挥砍/冷却期间按左键 → 缓冲下一刀（举刀）
@@ -144,25 +151,25 @@ var _saved_mask: int = 1
 @export var mount_prompt: Label               # 屏幕提示（F · 上马）
 @export var ride_offset: Vector3 = Vector3.ZERO   # 骑乘落点相对鞍座的偏移（X左右 / Y高低 / Z前后，随马朝向旋转）
 @export var ride_twist_speed: float = 6.0         # 扭转过渡/回正速度
-@export var ride_combat_blend: float = 3.0        # 骑乘时攻击/非攻击混合速度（越小越慢）
+@export var ride_combat_blend: float = 12.0       # 骑乘时攻击/非攻击混合速度（越小越慢）
 @export_group("骑乘瞄准·左右劈")
-@export var ride_aim_right_min_deg: float = 15.0  # 左右劈·右侧：最小角（>此角进入右区）
-@export var ride_aim_right_max_deg: float = 120.0 # 左右劈·右侧：最大角
-@export var ride_aim_left_min_deg: float = 15.0   # 左右劈·左侧：最小角（<-此角进入左区）
-@export var ride_aim_left_max_deg: float = 120.0  # 左右劈·左侧：最大角
+@export var ride_aim_right_min_deg: float = 70.0  # 左右劈·右侧：最小角（>此角进入右区）
+@export var ride_aim_right_max_deg: float = 100.0 # 左右劈·右侧：最大角
+@export var ride_aim_left_min_deg: float = 70.0   # 左右劈·左侧：最小角（<-此角进入左区）
+@export var ride_aim_left_max_deg: float = 100.0  # 左右劈·左侧：最大角
 @export_group("骑乘瞄准·上劈")
 @export var ride_aim_up_right_min_deg: float = 15.0  # 上劈·右侧：最小角
 @export var ride_aim_up_right_max_deg: float = 90.0  # 上劈·右侧：最大角
 @export var ride_aim_up_left_min_deg: float = 15.0   # 上劈·左侧：最小角
 @export var ride_aim_up_left_max_deg: float = 90.0   # 上劈·左侧：最大角
 @export_group("骑乘瞄准·下刺")
-@export var ride_aim_thrust_right_min_deg: float = 15.0  # 下刺·右侧：最小角
+@export var ride_aim_thrust_right_min_deg: float = 0.0  # 下刺·右侧：最小角
 @export var ride_aim_thrust_right_max_deg: float = 60.0  # 下刺·右侧：最大角
 @export var ride_aim_thrust_left_min_deg: float = 15.0   # 下刺·左侧：最小角
-@export var ride_aim_thrust_left_max_deg: float = 60.0   # 下刺·左侧：最大角
+@export var ride_aim_thrust_left_max_deg: float = 130.0  # 下刺·左侧：最大角
 @export_group("骑乘瞄准·通用")
-@export var ride_aim_turn_speed: float = 1.5      # 骑乘攻击方向换侧过渡角速度(弧度/秒)：越小越慢；时长=需转角度/此值
-@export var ride_aim_front_free_pitch_deg: float = 30.0  # 瞄准俯仰高于此角时取消正前 min 限制（可直接朝正前攻击）
+@export var ride_aim_turn_speed: float = 6.0      # 骑乘攻击方向换侧过渡角速度(弧度/秒)：越小越慢；时长=需转角度/此值
+@export var ride_aim_front_free_pitch_deg: float = -10.0  # 瞄准俯仰高于此角时取消正前 min 限制（可直接朝正前攻击）
 @export var ride_aim_front_free_blend_deg: float = 8.0   # 低于阈值后 min 从 0 渐变到完整值的过渡角度（防止瞬间转向）
 var _ride_anchor: Transform3D = Transform3D()     # 当前鞍座（骨骼锚点）世界变换
 var _ride_twist: float = 0.0                      # 平滑后的扭转量(-1..1)
@@ -170,14 +177,19 @@ var _ride_aim_yaw: float = 0.0                    # 平滑后的骑乘攻击水�
 var _ride_aim_side: int = 1                       # 当前攻击侧：+1 左 / -1 右（越过中线即切）
 var _ride_aim_switching: bool = false             # 是否正在换侧限速过渡
 # 弹簧骨骼（布娃娃式次级运动）参数
-@export var spring_stiffness: float = 0.1   # 先调低看弹簧是否生效
-@export var spring_drag: float = 0.3
-@export var spring_gravity: float = 1.0
+@export var spring_stiffness: float = 200.0
+@export var spring_drag: float = 2.0
+@export var spring_gravity: float = 0.0
 var spring_bones: SpringBoneSimulator3D = null
 
 # ============================================================
 func _ready():
 	health = max_health
+	_build_health_bar()
+	if weapon_area:
+		_weapon_damage = weapon_area.damage
+		weapon_area.area_entered.connect(_on_block_area_entered)
+		weapon_area.area_exited.connect(_on_block_area_exited)
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 	if animation_tree:
@@ -223,7 +235,7 @@ func _process(delta: float):
 	if riding:
 		_apply_ride_twist(delta)
 	# 平滑切换上半身加权：战斗中（蓄力/攻击/格挡）上半身切到攻击动作，否则回走路（腾空不算战斗 → 上身继续用跳跃动画）
-	var combat_active: bool = is_charging or is_attacking or is_blocking or is_recovering or health <= 0
+	var combat_active: bool = is_charging or is_attacking or is_blocking or is_recovering or _hit_stun > 0.0 or health <= 0
 	var blend_spd: float = ride_combat_blend if riding else 8.0   # 骑乘时上下身混合更慢
 	combat_upper_blend = move_toward(combat_upper_blend, 1.0 if combat_active else 0.0, blend_spd * delta)
 	animation_tree.set("parameters/body_blend/blend_amount", combat_upper_blend)
@@ -431,6 +443,22 @@ func _mount(h: Node3D, side: int = 0):
 	await get_tree().create_timer(_get_anim_length(String(_mount_base_anim), 1.0)).timeout
 	is_mounting = false                  # 播完：下半身保持末帧，上半身恢复常规
 
+func _dismount_last_ground_pos() -> Vector3:
+	# 用下马动画最后一帧的脚部世界位置作为最终落点；没有脚骨时退回当前位置
+	if skeleton:
+		var sum: Vector3 = Vector3.ZERO
+		var count: int = 0
+		for bone_name in ["LeftFoot", "RightFoot"]:
+			var idx: int = skeleton.find_bone(bone_name)
+			if idx < 0:
+				continue
+			sum += skeleton.global_transform * skeleton.get_bone_global_pose(idx).origin
+			count += 1
+		if count > 0:
+			var feet: Vector3 = sum / float(count)
+			return Vector3(feet.x, 0.0, feet.z)
+	return Vector3(global_position.x, 0.0, global_position.z)
+
 func _dismount():
 	if mount_horse == null:
 		return
@@ -451,8 +479,8 @@ func _dismount():
 	mount_horse.set("has_rider", false)
 	mount_horse.set("rider", null)
 	mount_horse.set("steer_locked", false)
-	# 下到左右对应的地面侧
-	global_position = mount_horse.global_position + mount_horse.global_transform.basis.x * (-1.4 * dismount_side)
+	# 停在本次下马动画最后一帧的脚部位置，而不是固定横向偏移
+	global_position = _dismount_last_ground_pos()
 	var dismount_yaw: float = global_rotation.y
 	global_rotation = Vector3(0.0, dismount_yaw, 0.0)
 	velocity = Vector3.ZERO
@@ -714,6 +742,8 @@ func _set_ride_anim_side(side: int) -> void:
 
 # ============================================================
 func _physics_process(delta: float):
+	if _hit_stun > 0.0:
+		_hit_stun = maxf(_hit_stun - delta, 0.0)
 	if riding:
 		_update_riding(delta)
 		_update_camera_follow()
@@ -1134,19 +1164,16 @@ func _do_attack_by_name(attack_name: String):
 	var swing_name: String = "attack_" + current_attack + "_swing"
 	if attack_sm:
 		attack_sm.travel(StringName(swing_name))
-	# 读取挥砍动画实际时长，把打击判定窗口对齐到挥砍中段
 	var swing_len: float = _get_anim_length(swing_name, 0.42)
-	await get_tree().create_timer(swing_len * 0.25).timeout
-	if my_gen != attack_gen:
-		return   # 挥砍已被格挡打断，别再开打击判定
-	weapon_hitbox.disabled = false
-	await get_tree().create_timer(swing_len * 0.45).timeout
-	weapon_hitbox.disabled = true
-	# 让挥砍的收招段播完再回 idle，避免动作被生硬切断
-	await get_tree().create_timer(swing_len * 0.30).timeout
-	# 格挡优先：格挡已接管，挥砍协程直接退出，别再改状态/顶动画
-	if my_gen != attack_gen or is_blocking:
+	if weapon_area:
+		weapon_area.damage = _weapon_damage
+	if weapon_hitbox:
+		weapon_hitbox.disabled = false
+	# 有效判定覆盖整个挥剑过程
+	await get_tree().create_timer(swing_len).timeout
+	if weapon_hitbox:
 		weapon_hitbox.disabled = true
+	if my_gen != attack_gen or is_blocking:
 		return
 	is_attacking = false
 	# 注意：这里不要清 last_anim_state —— 否则下一帧会对 move 层重新 travel，把移动动画从 0 帧重启（闪一下）
@@ -1194,6 +1221,40 @@ func _get_anim_length(clip: String, fallback: float) -> float:
 				return ap.get_animation(sname).get_length()
 	return fallback
 
+func _find_group_ancestor(node: Node, group_name: StringName) -> Node:
+	var n: Node = node
+	while n:
+		if n.is_in_group(group_name):
+			return n
+		n = n.get_parent()
+	return null
+
+func _on_block_area_entered(area: Area3D) -> void:
+	if not is_blocking:
+		return
+	var enemy: Node = _find_group_ancestor(area, &"enemy")
+	if enemy == null:
+		return
+	if enemy.has_method("is_in_block_window") and not bool(enemy.is_in_block_window()):
+		return
+	var serial: int = int(enemy.get("_attack_serial"))
+	if serial == _last_blocked_enemy_serial:
+		return
+	_last_blocked_enemy_serial = serial
+	_weapon_contact = true
+	var block_len: float = _get_anim_length("block_success_" + block_dir, 0.4)
+	if enemy.has_method("on_weapon_clash"):
+		enemy.on_weapon_clash(block_len)
+	_play_block_success(block_dir)
+
+func _on_block_area_exited(area: Area3D) -> void:
+	if _find_group_ancestor(area, &"enemy") != null:
+		_weapon_contact = false
+
+func _play_block_success(dir: String) -> void:
+	if attack_sm and dir != "":
+		attack_sm.start(StringName("block_success_" + dir))
+
 func _set_blocking(active: bool):
 	is_blocking = active
 	if active:
@@ -1206,7 +1267,11 @@ func _set_blocking(active: bool):
 		recover_gen += 1   # 令挂起的收招协程提前退出（无条件 +1，不会像 bool 那样残留）
 		attack_gen += 1    # 令挂起的挥砍协程彻底退出（否则挥砍协程醒来时格挡可能已松开，会顶掉格挡/后续攻击）
 		can_attack = true  # 清除挥砍锁定，否则打断后「格挡完再攻击」会被 _do_attack_by_name 的 can_attack 挡掉
-		weapon_hitbox.disabled = true
+		_weapon_contact = false
+		if weapon_hitbox:
+			weapon_hitbox.disabled = false
+		if weapon_area:
+			weapon_area.damage = 0.0
 		attack_buffered = false
 		# 鼠标动过才更新格挡方向；没动就保持上一次（初始默认「下」）
 		if last_mouse_relative.length() > 1.0:
@@ -1216,7 +1281,17 @@ func _set_blocking(active: bool):
 		if attack_sm:
 			# 用 travel 走 attack_* -> block_* 的短交叉淡化，避免 start() 硬切造成的跳变
 			attack_sm.travel(StringName("block_" + block_dir))
+		if weapon_area:
+			for area in weapon_area.get_overlapping_areas():
+				_on_block_area_entered(area)
 	else:
+		_weapon_contact = false
+		if animation_tree and not animation_tree.active:
+			animation_tree.active = true
+		if weapon_hitbox:
+			weapon_hitbox.disabled = true
+		if weapon_area:
+			weapon_area.damage = _weapon_damage
 		# 松开格挡时左键还按着 → 立刻淡入举剑攻击（不播格挡收招）
 		if lmb_held:
 			is_block_recovering = false
@@ -1252,21 +1327,139 @@ func _set_blocking(active: bool):
 		block_dir = ""
 		last_anim_state = ""
 
-# ============================================================
-func take_damage(amount: float, _attack_dir: String = ""):
-	if is_blocking:
-		var reduced: float = amount * 0.2
-		health -= reduced
+func is_in_block_window() -> bool:
+	if attack_sm == null or animation_tree == null:
+		return false
+	var state_name: String = String(attack_sm.get_current_node())
+	if not state_name.ends_with("_swing"):
+		return false
+	var ap: AnimationPlayer = animation_tree.get_node_or_null(animation_tree.anim_player) as AnimationPlayer
+	if ap == null:
+		return false
+	var anim_name: String = "s_" + state_name
+	if _attack_anim_nodes.has(state_name):
+		var node: AnimationNodeAnimation = _attack_anim_nodes[state_name]
+		if node and node.animation != &"":
+			anim_name = String(node.animation)
+	var anim: Animation = ap.get_animation(anim_name)
+	if anim == null:
+		return false
+	var step: float = anim.step if anim.step > 0.0 else 1.0 / 30.0
+	return attack_sm.get_current_play_position() <= 13.0 * step + 0.0001
+
+func on_weapon_clash(duration: float = 0.16):
+	# 挥剑撞到对方格挡武器：停在第14帧，退回第13帧停5帧
+	if _clash_freeze_t > 0.0 or not is_attacking:
 		return
+	if _blocked_attack_gen == attack_gen:
+		return
+	if not is_in_block_window():
+		return
+	if attack_sm == null or animation_tree == null:
+		return
+	var state_name: String = String(attack_sm.get_current_node())
+	if not state_name.ends_with("_swing"):
+		return
+	var ap: AnimationPlayer = animation_tree.get_node_or_null(animation_tree.anim_player) as AnimationPlayer
+	if ap == null:
+		return
+	var anim_name: String = "s_" + state_name
+	if _attack_anim_nodes.has(state_name):
+		var node: AnimationNodeAnimation = _attack_anim_nodes[state_name]
+		if node and node.animation != &"":
+			anim_name = String(node.animation)
+	var anim: Animation = ap.get_animation(anim_name)
+	if anim == null:
+		return
+	var step: float = anim.step if anim.step > 0.0 else 1.0 / 30.0
+	var f14: float = minf(13.0 * step, anim.length)
+	_blocked_attack_gen = attack_gen
+	_clash_freeze_t = duration
+	animation_tree.active = false
+	ap.play(anim_name, 0.0)
+	ap.seek(f14, true)
+	await get_tree().create_timer(duration).timeout
+	_clash_freeze_t = 0.0
+	animation_tree.active = true
+
+func _build_health_bar() -> void:
+	var hud := CanvasLayer.new()
+	hud.name = "PlayerHUD"
+	hud.layer = 10
+	add_child(hud)
+	var bar := ProgressBar.new()
+	bar.name = "PlayerHealthBar"
+	bar.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
+	bar.offset_left = -280.0
+	bar.offset_top = -52.0
+	bar.offset_right = -20.0
+	bar.offset_bottom = -20.0
+	bar.show_percentage = true
+	bar.max_value = max_health
+	bar.value = health
+	hud.add_child(bar)
+	_health_bar = bar
+
+func _update_health_bar() -> void:
+	if _health_bar == null:
+		return
+	_health_bar.max_value = max_health
+	_health_bar.value = clampf(health, 0.0, max_health)
+
+func _block_direction_matches(attack_dir: String) -> bool:
+	if block_dir == "" or attack_dir == "":
+		return false
+	if block_dir == "down":
+		return attack_dir == "thrust" or attack_dir == "down"
+	return block_dir == attack_dir
+
+func take_damage(amount: float, _attack_dir: String = ""):
+	var enemy := get_tree().get_first_node_in_group("enemy")
+	var block_window_ok: bool = true
+	if enemy and enemy.has_method("is_in_block_window"):
+		block_window_ok = bool(enemy.is_in_block_window())
+	if block_window_ok and is_blocking and (_weapon_contact or _block_direction_matches(_attack_dir)):
+		# 武器接触，或格挡方向与来袭方向一致：格挡成功
+		if enemy:
+			var serial: int = int(enemy.get("_attack_serial"))
+			if serial == _last_blocked_enemy_serial:
+				return
+			_last_blocked_enemy_serial = serial
+		if not _weapon_contact:
+			var block_len: float = _get_anim_length("block_success_" + block_dir, 0.4)
+			if enemy and enemy.has_method("on_weapon_clash"):
+				enemy.on_weapon_clash(block_len)
+			_play_block_success(block_dir)
+		return
+	if animation_tree and not animation_tree.active:
+		animation_tree.active = true
 	health -= amount
+	_update_health_bar()
+	# 受击时强制中断举剑/挥剑/格挡，播放受击动画（不再卡在攻击状态）
+	attack_gen += 1
+	is_charging = false
+	is_attacking = false
+	is_recovering = false
+	is_block_recovering = false
+	is_blocking = false
+	attack_buffered = false
+	attack_started_moving = false
+	can_attack = true
+	_lateral_attack_phase = 0
+	if weapon_hitbox:
+		weapon_hitbox.set_deferred("disabled", true)
+	_hit_stun = _get_anim_length("hit_weapon", 0.4)
 	if attack_sm:
-		attack_sm.travel(&"hit_weapon")
+		attack_sm.start(&"hit_weapon")
 	if health <= 0:
 		_die()
 
 func _die():
+	_update_health_bar()
+	if animation_tree and not animation_tree.active:
+		animation_tree.active = true
 	if attack_sm:
-		attack_sm.travel(&"death")
+		attack_sm.start(&"death")
 	set_physics_process(false)
 
 func is_dead() -> bool:

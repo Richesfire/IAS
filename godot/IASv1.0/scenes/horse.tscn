@@ -12,6 +12,8 @@ size = Vector3(4.013794, 2.5, 5)
 
 [node name="Horse" type="CharacterBody3D" unique_id=1985470082 groups=["horse"]]
 script = ExtResource("1_horse")
+turn_speed = 1.0
+turn_speed_fast = 0.5
 
 [node name="Model" parent="." unique_id=1415816563 instance=ExtResource("2_model")]
 transform = Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 0, 0, 0)
@@ -41,5 +43,3 @@ transform = Transform3D(-1, -1.2695561e-07, 8.2622094e-08, -9.209518e-08, 0.0765
 
 [node name="SeatRight" type="Marker3D" parent="RideBone" unique_id=1754051456]
 transform = Transform3D(-1, -1.2695561e-07, 8.2622094e-08, -9.209518e-08, 0.07652612, -0.99706775, 1.2026057e-07, -0.99706775, -0.07652617, -0.505, -0.186, 1.268)
-
-

@@ -2,8 +2,9 @@
 
 [ext_resource type="Script" uid="uid://bmnli6v2xghtp" path="res://scripts/weapon.gd" id="1_weapon"]
 
-[sub_resource type="BoxShape3D" id="hitbox_shape"]
-size = Vector3(0.044885255, 0.02584961, 0.79677737)
+[sub_resource type="CapsuleShape3D" id="hitbox_shape"]
+radius = 0.06
+height = 0.86
 
 [sub_resource type="BoxMesh" id="blade"]
 size = Vector3(0.09, 0.025, 1.6)
@@ -27,7 +28,7 @@ transform = Transform3D(-4.3711385e-08, 0, 1, 0, 1.0000002, 0, -0.99999994, 0, -
 script = ExtResource("1_weapon")
 
 [node name="WeaponHitbox" type="CollisionShape3D" parent="WeaponArea" unique_id=503782194]
-transform = Transform3D(1, 1.6306956e-12, -1.6306956e-12, 0, 1, -5.1880768e-20, 1.6306956e-12, -9.0632525e-20, 1, -0.00010376362, -0.0002587884, 0.49584967)
+transform = Transform3D(1, 0, 0, 0, 0, -1, 0, 1, 0, -0.00010376362, -0.0002587884, 0.49584967)
 shape = SubResource("hitbox_shape")
 disabled = true
 

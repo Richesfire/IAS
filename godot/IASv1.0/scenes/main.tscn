@@ -1,26 +1,30 @@
 [gd_scene format=3 uid="uid://chyb8hydql058"]
 
 [ext_resource type="PackedScene" uid="uid://c8a6l7k3415d3" path="res://scenes/player.tscn" id="1"]
-[ext_resource type="PackedScene" uid="uid://enemy001" path="res://scenes/enemy.tscn" id="2"]
+[ext_resource type="PackedScene" uid="uid://ceqe83eqshuly" path="res://scenes/enemy.tscn" id="2"]
 [ext_resource type="PackedScene" uid="uid://drmw7v8bcyqa5" path="res://scenes/horse.tscn" id="3_horse"]
+[ext_resource type="Material" path="res://materials/medieval_plain_mat.tres" id="4_plain"]
+[ext_resource type="Script" uid="uid://b5vdawls1dfjv" path="res://scripts/plain_vegetation.gd" id="5_veg"]
 
 [sub_resource type="Environment" id="6"]
 background_mode = 1
 background_color = Color(0.3, 0.4, 0.55, 1)
 ambient_light_source = 1
 ambient_light_color = Color(0.25, 0.28, 0.35, 1)
+fog_enabled = true
+fog_light_color = Color(0.52, 0.57, 0.5, 1)
+fog_light_energy = 0.8
+fog_density = 0.012
+fog_sky_affect = 0.35
 
 [sub_resource type="PlaneMesh" id="3"]
-size = Vector2(40, 40)
-
-[sub_resource type="StandardMaterial3D" id="4"]
-albedo_color = Color(0.35, 0.3, 0.25, 1)
-roughness = 0.9
+size = Vector2(170, 170)
 
 [sub_resource type="WorldBoundaryShape3D" id="5"]
 
 [sub_resource type="SystemFont" id="SystemFont_mount"]
 font_names = PackedStringArray("Microsoft YaHei", "Microsoft YaHei UI", "SimHei", "Noto Sans CJK SC", "sans-serif")
+subpixel_positioning = 0
 
 [node name="Main" type="Node3D" unique_id=1153310900]
 
@@ -58,12 +62,17 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.505, 0.2, 2.2)
 [node name="Floor" type="StaticBody3D" parent="." unique_id=680019731]
 
 [node name="FloorMesh" type="MeshInstance3D" parent="Floor" unique_id=1021680843]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.078707114, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
 mesh = SubResource("3")
-surface_material_override/0 = SubResource("4")
+surface_material_override/0 = ExtResource("4_plain")
 
 [node name="FloorCollision" type="CollisionShape3D" parent="Floor" unique_id=1052133190]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
+visible = false
 shape = SubResource("5")
+
+[node name="Vegetation" type="Node3D" parent="." unique_id=1754051460]
+script = ExtResource("5_veg")
 
 [node name="Player" parent="." unique_id=463884043 node_paths=PackedStringArray("camera_pivot", "camera_3d", "cam_default_marker", "cam_hold_marker", "cam_ride_marker", "cam_ride_hold_marker", "cam_ride_marker_right", "cam_ride_hold_marker_right", "mount_prompt") instance=ExtResource("1")]
 camera_pivot = NodePath("../CameraPivot")
@@ -74,34 +83,20 @@ cam_ride_marker = NodePath("../CameraPivot/RideCam")
 cam_ride_hold_marker = NodePath("../CameraPivot/RideCamHold")
 cam_ride_marker_right = NodePath("../CameraPivot/RideCamRight")
 cam_ride_hold_marker_right = NodePath("../CameraPivot/RideCamHoldRight")
+max_health = 1000.0
 mount_prompt = NodePath("../UI/MountPrompt")
-ride_combat_blend = 12.0
-ride_aim_right_min_deg = 70.0
-ride_aim_right_max_deg = 100.0
-ride_aim_left_min_deg = 70.0
-ride_aim_left_max_deg = 100.0
-ride_aim_thrust_right_min_deg = 0.0
-ride_aim_thrust_left_max_deg = 130.0
-ride_aim_turn_speed = 6.0
-ride_aim_front_free_pitch_deg = -10.0
-spring_stiffness = 200.0
-spring_drag = 2.0
-spring_gravity = 0.0
 
 [node name="Enemy" parent="." unique_id=135916710 instance=ExtResource("2")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5, 0, 5)
-move_speed = 0.0
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2.9246514, 0, -5.8941994)
 
 [node name="Enemy2" parent="." unique_id=306589666 instance=ExtResource("2")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -5, 0, 6)
-move_speed = 0.0
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -5.668207, 0, -4.915387)
 
 [node name="Enemy3" parent="." unique_id=2015539407 instance=ExtResource("2")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3, 0, -5)
-move_speed = 0.0
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -8.601782, 9.536743e-07, -4.8602247)
 
 [node name="Horse" parent="." unique_id=1732788455 instance=ExtResource("3_horse")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2, 0, -2.4957275)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.2023535, 0, -1.9285519)
 
 [node name="UI" type="CanvasLayer" parent="." unique_id=771204581]
 layer = 2
@@ -119,7 +114,6 @@ offset_right = 100.0
 offset_bottom = 100.0
 grow_horizontal = 2
 grow_vertical = 2
-mouse_filter = 2
 theme_override_colors/font_color = Color(1, 0.95, 0.8, 1)
 theme_override_colors/font_outline_color = Color(0, 0, 0, 1)
 theme_override_constants/outline_size = 6
